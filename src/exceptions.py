@@ -1,0 +1,2 @@
+class LunaError(Exception):
+    pass

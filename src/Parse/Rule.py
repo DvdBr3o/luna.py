@@ -6,6 +6,11 @@ expr = forward_declaration()
 
 sp = regex(r'\s*')
 
+@generate
+def numlit():
+    num = yield regex(r'[0-9]*')
+    return Ast.NumLit(num)
+
 def embraced(rule: Parser, l: str, r: str) -> Parser:
     @generate
     def parser():
@@ -51,7 +56,11 @@ def lambda_lit():
     yield string("->")
     yield sp
     body = yield expr
-    return Ast.Lambda(
-        param = param,
-        body = body,
-    )
+    match param:
+        case Ast.Ident(param):
+            return Ast.Lambda(
+                param = param,
+                body = body,
+            )
+
+expr = numlit | lambda_lit | val_ident | op_ident
