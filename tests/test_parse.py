@@ -1,5 +1,6 @@
-import Parse.Rule as Rule
-import Parse.Ast as Ast
+import luna.Parse.Rule as Rule
+import luna.Parse.Ast as Ast
+
 
 def test_ident():
     assert Rule.val_ident.parse("hello_world") == Ast.Ident("hello_world")
@@ -7,6 +8,5 @@ def test_ident():
     assert Rule.op_ident.parse("+=") == Ast.Ident("+=")
     assert Rule.op_ident.parse("**") == Ast.Ident("**")
     assert Rule.lambda_lit.parse("x -> 1") == Ast.Lambda(
-        param = "x",
-        body = Ast.NumLit("1")
+        param="x", body=Ast.NumLit("1")
     )

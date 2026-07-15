@@ -1,15 +1,17 @@
 from __future__ import annotations
 from parsy import regex, string, generate, forward_declaration, Parser
-import Parse.Ast as Ast
+import luna.Parse.Ast as Ast
 
 expr = forward_declaration()
 
-sp = regex(r'\s*')
+sp = regex(r"\s*")
+
 
 @generate
 def numlit():
-    num = yield regex(r'[0-9]*')
+    num = yield regex(r"[0-9]*")
     return Ast.NumLit(num)
+
 
 def embraced(rule: Parser, l: str, r: str) -> Parser:
     @generate
@@ -19,32 +21,42 @@ def embraced(rule: Parser, l: str, r: str) -> Parser:
         res = yield rule
         yield sp
         yield string(r)
-        return res 
-        
+        return res
+
     return parser
 
+
 def parenthesised(rule: Parser) -> Parser:
-    return embraced(rule, '(', ')')
+    return embraced(rule, "(", ")")
+
+
 def bracketed(rule: Parser) -> Parser:
-    return embraced(rule, '[', ']')
+    return embraced(rule, "[", "]")
+
+
 def braced(rule: Parser) -> Parser:
-    return embraced(rule, '{', '}')
-    
+    return embraced(rule, "{", "}")
+
+
 @generate
 def val_ident():
-    ident = yield regex(r'[a-z_A-Z][a-zA-Z_0-9]*')
+    ident = yield regex(r"[a-z_A-Z][a-zA-Z_0-9]*")
     return Ast.Ident(ident)
+
 
 @generate
 def op_ident():
-    ident = yield regex(r'[!@#$%^&*+-?/|~<>][!@#$%^&*+-?/|~<>=]*')
+    ident = yield regex(r"[!@#$%^&*+-?/|~<>][!@#$%^&*+-?/|~<>=]*")
     return Ast.Ident(ident)
-    
+
+
 @generate
 def _lambda_tbl_dstr_param_inner():
     pass
 
+
 lambda_param = val_ident | braced(_lambda_tbl_dstr_param_inner)
+
 
 @generate
 def lambda_lit():
@@ -59,8 +71,9 @@ def lambda_lit():
     match param:
         case Ast.Ident(param):
             return Ast.Lambda(
-                param = param,
-                body = body,
+                param=param,
+                body=body,
             )
+
 
 expr = numlit | lambda_lit | val_ident | op_ident
