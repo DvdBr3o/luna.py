@@ -1,0 +1,14 @@
+{ :match, :else } = require "match"
+
+iter: str ->
+    str: str
+    cur: 0
+    len: str .len
+
+    [meta]:
+        next:   self -> self .but { cur: self.cur + 1 }
+        unwrap: self -> self.str .at self.cur
+
+
+format: str -> cands ->
+

@@ -1,16 +1,38 @@
 from __future__ import annotations
+from luna.Utils import nu, NuTag
 from dataclasses import dataclass, field
 from typing import Dict, List, Callable, cast, TYPE_CHECKING
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Buffer
 
 if TYPE_CHECKING:
-    from luna.Eval.Context import Env, Context
+    from luna.Eval.Context import Env
     from Parse.Ast import Ast
 
 
 class Val(ABC):
     pass
+
+
+class Lazy(Val):
+    def __init__(self, resolver: Callable[[], Val]) -> None:
+        self._resolver = resolver
+        self._forced = False
+        self._forcing = False
+        self._value: Val | None = None
+
+    def force(self) -> Val:
+        if self._forced:
+            return cast(Val, self._value)
+        if self._forcing:
+            raise RuntimeError("recursive table binding forced cyclically")
+        self._forcing = True
+        try:
+            self._value = self._resolver()
+            self._forced = True
+            return self._value
+        finally:
+            self._forcing = False
 
 
 @dataclass(frozen=True)
@@ -20,7 +42,11 @@ class CstNum(Val):
 
 @dataclass(frozen=True)
 class CstStr(Val):
-    cst: str
+    cst: Buffer
+
+    @staticmethod
+    def from_strlit(s: str) -> CstStr:
+        return CstStr(bytes(s, "utf-8"))
 
 
 @dataclass(frozen=True)
@@ -32,7 +58,7 @@ class Clo(Val):
     def apply(self, arg: Val) -> Val:
         from luna.Eval.Context import Context
 
-        return Context(self.env).with_env({self.param: arg}).eval(self.body)
+        return self.env.with_env({self.param: arg}).eval(self.body)
 
 
 @dataclass(frozen=True)
@@ -66,7 +92,7 @@ class TableTag:
 @dataclass(frozen=True)
 class Tbl(Val):
     tbl: Dict[Val, Val] = field(hash=False)
-    tag: TableTag = TableTag()
+    tag: NuTag = field(default_factory=nu)
 
     def without(self, index: Val) -> Tbl:
         """
@@ -96,7 +122,5 @@ class Tbl(Val):
         reverse_kv  = tbl -> tbl .fold tbl init -> k -> v -> tbl .but v k
         """
         for k, v in self.tbl.items():
-            print(f"{init}")
             init = cast(Clo, cast(Clo, clo.apply(init)).apply(k)).apply(v)
-        print(f"{init}")
         return init

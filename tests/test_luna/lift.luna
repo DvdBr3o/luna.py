@@ -1,0 +1,17 @@
+{ :a, :b } = { a: 1 } .cat { b: 1 }
+
+foo = Number =>. Number =>. Number .that
+    a -> b ->
+        a + b
+
+bar = (List.of Number) =>. Number .that
+    a .accumulate 0 init -> aa -> init + aa
+
+LIFT =
+    [index]: self -> self
+    [call]:  self -> index
+
+LIFT * 2        -- (LIFT meta "*") LIFT 2 
+LIFT.x          -- LIFT "x"
+
+
