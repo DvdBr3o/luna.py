@@ -31,6 +31,10 @@ def test_run_module_applies_multiple_cli_args_to_curried_closure():
     assert run_module("demo.pair", ["114", "514"], cwd=TEST_ROOT) == CstNum(114)
 
 
+def test_run_module_add_one_uses_operator_meta_dispatch():
+    assert run_module("add_one", ["114"], cwd=TEST_ROOT) == CstNum(115)
+
+
 def test_main_prints_result(monkeypatch, capsys):
     monkeypatch.chdir(TEST_ROOT)
 

@@ -21,10 +21,7 @@ class Ast(ABC):
 
 
 def _nil_value(env: Env) -> Val.Val:
-    nil = env.lookup("nil")
-    if nil is None:
-        return Val.Tbl({})
-    return nil
+    return env.nil()
 
 
 def _lookup_table(env: Env, obj: Val.Val, index: Val.Val) -> Val.Val:
@@ -34,6 +31,10 @@ def _lookup_table(env: Env, obj: Val.Val, index: Val.Val) -> Val.Val:
     if value is None:
         return _nil_value(env)
     return value
+
+
+def _is_operator_ident(ident: str) -> bool:
+    return bool(ident) and all(ch in "!@#$%^&*+-?/|~<>=" for ch in ident)
 
 
 def _literal_binding_name(key: Ast) -> str | None:
@@ -160,29 +161,14 @@ class Apply(Ast):
     applyee: Ast
 
     def eval(self, env):
-        from luna.Eval.Val import Clo, Tbl, BltClo, BltCloCont
-
-        match (env.eval(self.applyer), env.eval(self.applyee)):
-            case (Clo(env, param, body), applyee):
-                return (
-                    env.with_env(env._env)  #
-                    .with_env({param: applyee})  #
-                    .eval(body)  #
-                )
-            case (Tbl() as tbl, applyee):
-                return _lookup_table(env, tbl, applyee)
-            case (BltClo(arity, fn), applyee):
-                if arity == 1:
-                    return fn([applyee])
-                else:
-                    return BltCloCont(BltClo(arity, fn), 1, [applyee])
-            case (BltCloCont(BltClo(arity, fn), argc, argv), applyee):
-                if argc + 1 == arity:
-                    return fn([*argv, applyee])
-                else:
-                    return BltCloCont(BltClo(arity, fn), argc + 1, [*argv, applyee])
-            case _:
-                raise
+        if isinstance(self.applyer, Ident) and _is_operator_ident(self.applyer.ident):
+            lhs = env.eval(self.applyee)
+            operator = env.eval_meta_field(
+                lhs,
+                Val.CstStr.from_strlit(self.applyer.ident),
+            )
+            return env.apply_val(operator, lhs)
+        return env.apply_val(env.eval(self.applyer), env.eval(self.applyee))
 
 
 def chain_apply(applyer: Ast, applyees: List[Ast] = []):

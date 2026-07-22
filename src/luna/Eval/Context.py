@@ -51,6 +51,60 @@ class Env:
     def derive(self, env: Dict[str, Val.Val]) -> Env:
         return Env(env=env, prev=self)
 
+    def nil(self) -> Val.Val:
+        nil = self.lookup("nil")
+        if nil is None:
+            return Tbl({})
+        return nil
+
+    def apply_val(self, applyer: Val.Val, applyee: Val.Val) -> Val.Val:
+        from luna.Eval.Val import Clo, Tbl, BltClo, BltCloCont
+
+        match (applyer, applyee):
+            case (Clo(env, param, body), applyee):
+                return (
+                    env.with_env(env._env)
+                    .with_env({param: applyee})
+                    .eval(body)
+                )
+            case (Tbl() as tbl, applyee):
+                value = tbl.at(applyee)
+                if value is None:
+                    return self.nil()
+                return value
+            case (BltClo(arity, fn), applyee):
+                if arity == 1:
+                    return fn([applyee])
+                return BltCloCont(BltClo(arity, fn), 1, [applyee])
+            case (BltCloCont(BltClo(arity, fn), argc, argv), applyee):
+                if argc + 1 == arity:
+                    return fn([*argv, applyee])
+                return BltCloCont(BltClo(arity, fn), argc + 1, [*argv, applyee])
+            case _:
+                raise TypeError(f"Cannot apply value {applyer!r} to {applyee!r}")
+
+    def eval_meta(self, value: Val.Val) -> Val.Val:
+        meta = self.lookup("meta")
+        if meta is None:
+            return Tbl({})
+
+        match value:
+            case Val.CstNum():
+                number = self.lookup("Number")
+                return number if number is not None else self.nil()
+            case Val.CstStr():
+                string = self.lookup("String")
+                return string if string is not None else self.nil()
+            case Tbl() as tbl:
+                return tbl.at(meta) or self.nil()
+            case Val.Clo() | Val.BltClo() | Val.BltCloCont():
+                return self.apply_val(value, meta)
+            case _:
+                return self.nil()
+
+    def eval_meta_field(self, value: Val.Val, field: Val.Val) -> Val.Val:
+        return self.apply_val(self.eval_meta(value), field)
+
     @staticmethod
     def default():
         cststr = CstStr.from_strlit
@@ -76,7 +130,7 @@ class Env:
                         cststr("==="): Builtin.Table.same,
                     }
                 ),
-                "number": Tbl(
+                "Number": Tbl(
                     {
                         cststr("add"): Builtin.Number.add,
                         cststr("mns"): Builtin.Number.mns,
@@ -88,7 +142,7 @@ class Env:
                         cststr("/"): Builtin.Number.div,
                     }
                 ),
-                "string": Tbl(
+                "String": Tbl(
                     {
                         cststr("cat"): Builtin.String.cat(nil),
                         cststr("but"): Builtin.String.but(nil),

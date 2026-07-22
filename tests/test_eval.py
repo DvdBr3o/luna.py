@@ -271,3 +271,31 @@ tbl.k5
         )
         == Val.CstStr.from_strlit("inner")
     )
+
+
+def test_env_eval_meta_field_for_primitives_and_tables():
+    env = Context().env
+    assert env.eval_meta_field(Val.CstNum(1), Val.CstStr.from_strlit("+")) == Builtin.Number.add
+    assert env.eval_meta_field(
+        Val.CstStr.from_strlit("hello"), Val.CstStr.from_strlit("len")
+    ) == env.lookup("String").at(Val.CstStr.from_strlit("len"))
+
+    meta = env.lookup("meta")
+    assert meta is not None
+    table = Val.Tbl(
+        {
+            meta: Val.Tbl(
+                {
+                    Val.CstStr.from_strlit("greet"): Val.CstStr.from_strlit("world")
+                }
+            )
+        }
+    )
+    assert env.eval_meta_field(
+        table, Val.CstStr.from_strlit("greet")
+    ) == Val.CstStr.from_strlit("world")
+
+
+def test_eval_operator_dispatch():
+    assert eval(Rule.expr.parse("1 + 2")) == Val.CstNum(3)
+    assert eval(Rule.expr.parse("(x -> x + 1) 41")) == Val.CstNum(42)
