@@ -69,3 +69,27 @@ def sub(nil: Tbl):
                 return nil
 
     return sub_impl
+
+
+def equal(nil: Tbl, true: Tbl):
+    @builtin(2)
+    def equal_impl(vals: List[Val]):
+        match (vals[0], vals[1]):
+            case (CstStr(lhs), CstStr(rhs)):
+                return true if bytes(lhs) == bytes(rhs) else nil
+            case _:
+                return nil
+
+    return equal_impl
+
+
+def same(nil: Tbl, true: Tbl):
+    @builtin(2)
+    def same_impl(vals: List[Val]):
+        match (vals[0], vals[1]):
+            case (CstStr(lhs), CstStr(rhs)):
+                return true if bytes(lhs) == bytes(rhs) else nil
+            case _:
+                return nil
+
+    return same_impl

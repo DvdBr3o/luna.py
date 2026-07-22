@@ -2,27 +2,11 @@ from __future__ import annotations
 
 import ast as py_ast
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence
+from typing import Sequence
+
+from parsy import eof, forward_declaration, generate, regex, seq, string
 
 import luna.Parse.Ast as Ast
-
-
-@dataclass(frozen=True)
-class Token:
-    kind: str
-    value: str = ""
-
-
-def _is_ident_start(ch: str) -> bool:
-    return ch.isalpha() or ch == "_"
-
-
-def _is_ident_part(ch: str) -> bool:
-    return ch.isalnum() or ch == "_"
-
-
-def _is_op_start(ch: str) -> bool:
-    return ch in "!@#$%^&*+-?/|~<>"
 
 
 def _table_field_key(name: str) -> Ast.StrLit:
@@ -56,527 +40,155 @@ def _merge_table_ast(lhs: Ast.Table, rhs: Ast.Table) -> Ast.Table:
     return Ast.Table(merged)
 
 
-class _Tokenizer:
-    def __init__(self, src: str) -> None:
-        self.src = src
-        self.i = 0
-        self.tokens: List[Token] = []
-        self.indents = [0]
-        self.line_start = True
-        self.pending_space = False
+def _strip_comments_and_split_lines(src: str) -> list[str]:
+    lines: list[str] = []
+    buf: list[str] = []
+    i = 0
+    state = "normal"
+    escaped = False
 
-    def _peek(self, n: int = 0) -> str:
-        j = self.i + n
-        return self.src[j] if j < len(self.src) else ""
+    while i < len(src):
+        ch = src[i]
 
-    def _emit(self, kind: str, value: str = "") -> None:
-        self.tokens.append(Token(kind, value))
-
-    def tokenize(self) -> List[Token]:
-        while self.i < len(self.src):
-            if self.line_start:
-                indent = 0
-                while self._peek() == " ":
-                    indent += 1
-                    self.i += 1
-                while self._peek() == "\t":
-                    indent += 4
-                    self.i += 1
-                if self.src.startswith("--[[", self.i) or self.src.startswith("-- [[", self.i):
-                    end = self.src.find("]]", self.i + 4)
-                    self.i = len(self.src) if end < 0 else end + 2
-                    continue
-                if self.src.startswith("--", self.i):
-                    end = self.src.find("\n", self.i)
-                    self.i = len(self.src) if end < 0 else end
-                    continue
-                if self._peek() == "\n":
-                    self.i += 1
-                    continue
-                if indent > self.indents[-1]:
-                    self.indents.append(indent)
-                    self._emit("INDENT")
-                else:
-                    while indent < self.indents[-1]:
-                        self.indents.pop()
-                        self._emit("DEDENT")
-                self.line_start = False
-                self.pending_space = indent > 0
-                continue
-            ch = self._peek()
-            if ch in " \t":
-                self.pending_space = True
-                self.i += 1
-                continue
-            if ch == "\r":
-                self.i += 1
-                continue
-            if ch == "\n":
-                j = self.i + 1
-                while j < len(self.src) and self.src[j] in " \t":
+        if state == "normal":
+            if src.startswith("--", i):
+                j = i + 2
+                while j < len(src) and src[j] == " ":
                     j += 1
-                if j < len(self.src) and self.src[j] == "." and j + 1 < len(self.src) and _is_ident_start(self.src[j + 1]):
-                    self.i = j
-                    self.pending_space = True
-                    self.line_start = False
+                if src.startswith("[[", j):
+                    i = j + 2
+                    state = "block_comment"
                     continue
-                self._emit("NEWLINE")
-                self.i += 1
-                self.line_start = True
-                self.pending_space = False
+                while i < len(src) and src[i] != "\n":
+                    i += 1
                 continue
-            if self.src.startswith("--[[", self.i) or self.src.startswith("-- [[", self.i):
-                end = self.src.find("]]", self.i + 4)
-                self.i = len(self.src) if end < 0 else end + 2
-                continue
-            if self.src.startswith("--", self.i):
-                end = self.src.find("\n", self.i)
-                self.i = len(self.src) if end < 0 else end
-                continue
-            if self.src.startswith("[[", self.i):
-                end = self.src.find("]]", self.i + 2)
-                if end < 0:
-                    raise ValueError("Unclosed block string")
-                self._emit("STR", self.src[self.i + 2 : end])
-                self.i = end + 2
-                self.pending_space = False
+            if src.startswith("[[", i):
+                buf.append("[[")
+                i += 2
+                state = "block_string"
                 continue
             if ch == '"':
-                j = self.i + 1
-                esc = False
-                while j < len(self.src):
-                    c = self.src[j]
-                    if esc:
-                        esc = False
-                    elif c == "\\":
-                        esc = True
-                    elif c == '"':
-                        break
-                    j += 1
-                if j >= len(self.src):
-                    raise ValueError("Unclosed string")
-                self._emit("STR", py_ast.literal_eval(self.src[self.i : j + 1]))
-                self.i = j + 1
-                self.pending_space = False
+                buf.append(ch)
+                i += 1
+                state = "quoted"
+                escaped = False
                 continue
-            if ch in "{}()[],:=":
-                self._emit(ch)
-                self.i += 1
-                self.pending_space = False
+            if ch == "\n":
+                lines.append("".join(buf))
+                buf = []
+                i += 1
                 continue
-            if self.src.startswith("->", self.i):
-                self._emit("ARROW")
-                self.i += 2
-                self.pending_space = False
+            if ch == "\r":
+                i += 1
                 continue
-            if ch == ".":
-                j = self.i + 1
-                if j < len(self.src) and _is_ident_start(self._peek(1)):
-                    while j < len(self.src) and _is_ident_part(self.src[j]):
-                        j += 1
-                    if self.pending_space:
-                        self._emit("DISPATCH", self.src[self.i + 1 : j])
-                    else:
-                        self._emit(".", self.src[self.i + 1 : j])
-                    self.i = j
-                    self.pending_space = False
-                    continue
-                if j < len(self.src) and self.src[j].isdigit() and not self.pending_space:
-                    while j < len(self.src) and self.src[j].isdigit():
-                        j += 1
-                    self._emit(".", self.src[self.i + 1 : j])
-                    self.i = j
-                    self.pending_space = False
-                    continue
-                self._emit(".")
-                self.i += 1
-                self.pending_space = False
+            buf.append(ch)
+            i += 1
+            continue
+
+        if state == "quoted":
+            buf.append(ch)
+            i += 1
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                state = "normal"
+            continue
+
+        if state == "block_string":
+            if src.startswith("]]", i):
+                buf.append("]]")
+                i += 2
+                state = "normal"
                 continue
-            if _is_ident_start(ch):
-                j = self.i + 1
-                while j < len(self.src) and _is_ident_part(self.src[j]):
-                    j += 1
-                self._emit("IDENT", self.src[self.i:j])
-                self.i = j
-                self.pending_space = False
+            if ch == "\r":
+                i += 1
                 continue
-            if _is_op_start(ch):
-                j = self.i + 1
-                while j < len(self.src) and self.src[j] in "!@#$%^&*+-?/|~<>=":
-                    j += 1
-                self._emit("OP", self.src[self.i:j])
-                self.i = j
-                self.pending_space = False
+            buf.append(ch)
+            i += 1
+            continue
+
+        if state == "block_comment":
+            if src.startswith("]]", i):
+                i += 2
+                state = "normal"
                 continue
-            if ch.isdigit() or (ch == "-" and self._peek(1).isdigit()):
-                j = self.i + 1 if ch == "-" else self.i
-                while j < len(self.src) and self.src[j].isdigit():
-                    j += 1
-                if j < len(self.src) and self.src[j] == "." and j + 1 < len(self.src) and self.src[j + 1].isdigit():
-                    j += 1
-                    while j < len(self.src) and self.src[j].isdigit():
-                        j += 1
-                self._emit("NUM", self.src[self.i:j])
-                self.i = j
-                self.pending_space = False
+            if ch == "\n":
+                lines.append("".join(buf))
+                buf = []
+                i += 1
                 continue
-            raise ValueError(f"Unexpected char {ch!r}")
-        while len(self.indents) > 1:
-            self.indents.pop()
-            self._emit("DEDENT")
-        self._emit("EOF")
-        return self.tokens
+            i += 1
+            continue
+
+    lines.append("".join(buf))
+    return lines
 
 
-class _Parser:
-    def __init__(self, src: str) -> None:
-        self.tokens = _Tokenizer(src).tokenize()
-        self.i = 0
-
-    def _peek(self, n: int = 0) -> Token:
-        j = self.i + n
-        return self.tokens[j] if j < len(self.tokens) else Token("EOF")
-
-    def _accept(self, kind: str, value: str | None = None) -> Optional[Token]:
-        tok = self._peek()
-        if tok.kind == kind and (value is None or tok.value == value):
-            self.i += 1
-            return tok
-        return None
-
-    def _expect(self, kind: str, value: str | None = None) -> Token:
-        tok = self._accept(kind, value)
-        if tok is None:
-            raise ValueError(f"expected {kind}")
-        return tok
-
-    def _skip_newlines(self) -> None:
-        while self._accept("NEWLINE"):
-            pass
-
-    def parse(self) -> Ast.Ast:
-        expr = self._parse_block()
-        self._skip_newlines()
-        self._expect("EOF")
-        return expr
-
-    def _parse_block(self, stop: Iterable[str] = ()) -> Ast.Ast:
-        stop = set(stop)
-        stmts: List[object] = []
-        self._skip_newlines()
-        while (
-            self._peek().kind not in stop
-            and self._peek().kind not in {"EOF", "}", "DEDENT"}
-        ):
-            if self._peek().kind == "NEWLINE":
-                self._skip_newlines()
-                continue
-            stmts.append(self._parse_stmt())
-            self._skip_newlines()
-        return self._collapse_block(stmts)
-
-    def _collapse_block(self, stmts: List[object]) -> Ast.Ast:
-        if not stmts:
-            return Ast.Table({})
-        lets = [stmt for stmt in stmts if isinstance(stmt, tuple) and stmt[0] == "let"]
-        exprs = [
-            Ast.Table(stmt[1])
-            if isinstance(stmt, tuple) and stmt[0] == "table"
-            else stmt
-            for stmt in stmts
-            if not (isinstance(stmt, tuple) and stmt[0] == "let")
-        ]
-        if len(exprs) > 1 and all(isinstance(expr, Ast.Table) for expr in exprs):
-            tbl = Ast.Table({})
-            for expr in exprs:
-                tbl = _merge_table_ast(tbl, expr)
-            expr = tbl
+def _indent_width(line: str) -> int:
+    width = 0
+    for ch in line:
+        if ch == " ":
+            width += 1
+        elif ch == "\t":
+            width += 4
         else:
-            expr = exprs[-1] if exprs else Ast.Table({})
-        for stmt in reversed(lets):
-            expr = Ast.LetIn(stmt[1], stmt[2], expr)
-        return expr
-
-    def _parse_indented_block(self) -> Ast.Ast:
-        self._expect("INDENT")
-        body = self._parse_block()
-        self._expect("DEDENT")
-        return body
-
-    def _parse_stmt(self):
-        if self._looks_like_let():
-            pat = self._parse_pattern()
-            self._expect("=")
-            if self._accept("NEWLINE"):
-                value = self._parse_indented_block()
-            else:
-                value = self._parse_expr()
-            return ("let", pat, value)
-        if self._looks_like_table_item():
-            return self._parse_table_items()
-        return self._parse_expr()
-
-    def _looks_like_let(self) -> bool:
-        save = self.i
-        try:
-            self._parse_pattern()
-            ok = self._accept("=") is not None
-            return ok
-        except Exception:
-            return False
-        finally:
-            self.i = save
-
-    def _looks_like_table_item(self) -> bool:
-        save = self.i
-        try:
-            self._parse_table_key_path()
-            return self._accept(":") is not None
-        except Exception:
-            return False
-        finally:
-            self.i = save
-
-    def _parse_pattern(self):
-        if self._accept("{"):
-            positional = []
-            named = []
-            self._skip_newlines()
-            if not self._accept("}"):
-                while True:
-                    if self._accept(":"):
-                        name = self._expect("IDENT").value
-                        named.append((name, name))
-                    else:
-                        first = self._expect("IDENT").value
-                        if self._accept(":"):
-                            key = self._expect("IDENT").value
-                            named.append((first, key))
-                        else:
-                            positional.append(Ast.IdentPattern(first))
-                    if self._accept("}"):
-                        break
-                    self._accept(",")
-                    self._skip_newlines()
-            return Ast.TablePattern(tuple(positional), tuple(named))
-        return Ast.IdentPattern(self._expect("IDENT").value)
-
-    def _parse_table_path_atom(self):
-        if self._accept("["):
-            key = self._parse_expr()
-            self._expect("]")
-            return key
-        tok = self._peek()
-        if tok.kind == "IDENT":
-            self.i += 1
-            return _table_field_key(tok.value)
-        if tok.kind == "NUM":
-            self.i += 1
-            return _table_numeric_key(tok.value)
-        raise ValueError("expected table key")
-
-    def _parse_table_key_path(self):
-        path = [self._parse_table_path_atom()]
-        while True:
-            dot = self._accept(".")
-            if dot is not None:
-                if not dot.value:
-                    raise ValueError("expected table field after '.'")
-                if dot.value.lstrip("-").isdigit():
-                    path.append(_table_numeric_key(dot.value))
-                else:
-                    path.append(_table_field_key(dot.value))
-                continue
-            if self._accept("["):
-                path.append(self._parse_expr())
-                self._expect("]")
-                continue
             break
-        return path
+    return width
 
-    def _parse_table_items(self):
-        tbl = Ast.Table({})
-        positional_index = 1
-        saw_positional = False
-        while True:
-            if self._looks_like_table_item():
-                key_path = self._parse_table_key_path()
-                self._expect(":")
-                if self._accept("NEWLINE"):
-                    value = self._parse_indented_block()
-                else:
-                    value = self._parse_expr()
-                if (
-                    len(key_path) == 1
-                    and isinstance(key_path[0], Ast.NumLit)
-                    and key_path[0].lit.isdigit()
-                ):
-                    if saw_positional:
-                        raise ValueError(
-                            "implicit list entries conflict with explicit numeric table keys"
-                        )
-                tbl = _merge_table_ast(tbl, _nested_table_from_path(key_path, value))
-            else:
-                value = self._parse_expr()
-                saw_positional = True
-                tbl = _merge_table_ast(
-                    tbl,
-                    Ast.Table({_table_numeric_key(str(positional_index)): value}),
-                )
-                positional_index += 1
-            if not self._accept(","):
-                break
-        return ("table", tbl.tbl)
 
-    def _parse_atom(self):
-        tok = self._peek()
-        if tok.kind == "NUM":
-            self.i += 1
-            return Ast.NumLit(tok.value)
-        if tok.kind == "STR":
-            self.i += 1
-            return Ast.StrLit(tok.value)
-        if tok.kind == "IDENT":
-            self.i += 1
-            return Ast.Ident(tok.value)
-        if tok.kind == "OP":
-            self.i += 1
-            return Ast.Ident(tok.value)
-        if tok.kind == "(":
-            self.i += 1
-            expr = self._parse_expr()
-            self._expect(")")
-            return expr
-        if tok.kind == "{":
-            self.i += 1
-            tbl = Ast.Table({})
-            positional_index = 1
-            saw_positional = False
-            self._skip_newlines()
-            if not self._accept("}"):
-                while True:
-                    if self._looks_like_table_item():
-                        key_path = self._parse_table_key_path()
-                        self._expect(":")
-                        if self._accept("NEWLINE"):
-                            value = self._parse_indented_block()
-                        else:
-                            value = self._parse_expr()
-                        if (
-                            len(key_path) == 1
-                            and isinstance(key_path[0], Ast.NumLit)
-                            and key_path[0].lit.isdigit()
-                        ):
-                            if saw_positional:
-                                raise ValueError(
-                                    "implicit list entries conflict with explicit numeric table keys"
-                                )
-                        tbl = _merge_table_ast(
-                            tbl,
-                            _nested_table_from_path(key_path, value),
-                        )
-                    else:
-                        value = self._parse_expr()
-                        saw_positional = True
-                        tbl = _merge_table_ast(
-                            tbl,
-                            Ast.Table(
-                                {_table_numeric_key(str(positional_index)): value}
-                            ),
-                        )
-                        positional_index += 1
-                    self._skip_newlines()
-                    if self._accept("}"):
-                        break
-                    self._accept(",")
-                    self._skip_newlines()
-            return tbl
-        raise ValueError(f"unexpected token {tok.kind}")
+def _is_blank(line: str) -> bool:
+    return not line.strip()
 
-    def _parse_lambda_if_any(self):
-        save = self.i
-        try:
-            pat = self._parse_pattern()
-            if self._accept("ARROW"):
-                if self._peek().kind == "NEWLINE":
-                    self._skip_newlines()
-                    body = self._parse_indented_block()
-                else:
-                    body = self._parse_expr()
-                return Ast.Lambda(param=pat, body=body)
-        except Exception:
-            pass
-        self.i = save
-        return None
 
-    def _parse_expr(self):
-        if self._looks_like_table_item():
-            return Ast.Table(self._parse_table_items()[1])
-        lam = self._parse_lambda_if_any()
-        if lam is not None:
-            return lam
-        return self._parse_operator_expr()
+def _is_continuation_line(text: str) -> bool:
+    stripped = text.lstrip()
+    return bool(stripped) and stripped[0] in ".\\"
 
-    def _parse_operator_expr(self):
-        expr = self._parse_postfix()
-        while self._peek().kind == "OP":
-            op = Ast.Ident(self._expect("OP").value)
-            rhs = self._parse_postfix()
-            expr = Ast.chain_apply(op, [expr, rhs])
-        return expr
 
-    def _parse_postfix(self):
-        expr = self._parse_atom()
-        while True:
-            dot = self._accept(".")
-            if dot is not None:
-                field = dot.value or self._expect("IDENT").value
-                if field.lstrip("-").isdigit():
-                    expr = Ast.IndexAccess(expr, Ast.NumLit(field))
-                else:
-                    expr = Ast.FieldAccess(expr, field)
+def _delimiter_delta(text: str) -> int:
+    delta = 0
+    i = 0
+    state = "normal"
+    escaped = False
+
+    while i < len(text):
+        ch = text[i]
+        if state == "normal":
+            if text.startswith("[[", i):
+                i += 2
+                state = "block_string"
                 continue
-            if self._accept("["):
-                index = self._parse_expr()
-                self._expect("]")
-                expr = Ast.IndexAccess(expr, index)
+            if ch == '"':
+                i += 1
+                state = "quoted"
+                escaped = False
                 continue
-            if self._peek().kind == "DISPATCH":
-                name = self._expect("DISPATCH").value
-                args = [expr]
-                while True:
-                    if self._peek().kind in {"EOF", "NEWLINE", "}", ")", "DEDENT"}:
-                        break
-                    if self._peek().kind == ",":
-                        break
-                    if self._peek().kind == "DISPATCH":
-                        break
-                    if self._peek().kind == "OP":
-                        break
-                    if self._peek().kind == "IDENT" and self._peek(1).kind == ":":
-                        break
-                    arg = self._parse_postfix_atomish()
-                    args.append(arg)
-                expr = Ast.chain_apply(Ast.Ident(name), args)
+            if ch in "({[":
+                delta += 1
+            elif ch in ")}]":
+                delta -= 1
+            i += 1
+            continue
+        if state == "quoted":
+            i += 1
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                state = "normal"
+            continue
+        if state == "block_string":
+            if text.startswith("]]", i):
+                i += 2
+                state = "normal"
                 continue
-            if self._peek().kind == "NEWLINE" and self._peek(1).kind == "INDENT" and self._peek(2).kind == "DISPATCH":
-                self._expect("NEWLINE")
-                self._expect("INDENT")
-                continue
-            if self._peek().kind == "DEDENT":
-                break
-            if self._peek().kind in {"NUM", "STR", "IDENT", "(", "{"}:
-                arg = self._parse_postfix_atomish()
-                expr = Ast.Apply(expr, arg)
-                continue
-            break
-        return expr
+            i += 1
+            continue
 
-    def _parse_postfix_atomish(self):
-        lam = self._parse_lambda_if_any()
-        if lam is not None:
-            return lam
-        return self._parse_atom()
+    return delta
 
 
 class _SingleRule:
@@ -587,28 +199,584 @@ class _SingleRule:
         return self.fn(text)
 
 
-def _parse_ident(text: str, kind: str):
-    p = _Tokenizer(text).tokenize()
-    if len(p) != 2 or p[0].kind != kind or p[1].kind != "EOF":
-        raise ValueError("parse error")
-    return Ast.Ident(p[0].value)
+@dataclass(frozen=True)
+class _PendingLambda:
+    params: tuple[Ast.Pattern, ...]
 
 
-def _parse_num(text: str):
-    return _Parser(text).parse()
+@dataclass(frozen=True)
+class _PendingApplyLambda:
+    applyer: Ast.Ast
+    params: tuple[Ast.Pattern, ...]
 
 
-def _parse_str(text: str):
-    return _Parser(text).parse()
+@dataclass(frozen=True)
+class _LineLet:
+    pattern: Ast.Pattern
+    value: Ast.Ast | _PendingLambda | _PendingApplyLambda | None
+
+
+@dataclass(frozen=True)
+class _LineTableItem:
+    path: Sequence[Ast.Ast]
+    value: Ast.Ast | _PendingLambda | _PendingApplyLambda | None
+
+
+_WS = regex(r"[ \t]*")
+_WS1 = regex(r"[ \t]+")
+_IDENT_TEXT = regex(r"[A-Za-z_][A-Za-z0-9_]*")
+_OP_TEXT = regex(r"[!@#$%^&*+\-?/|~<>=]+")
+_NUM_TEXT = regex(r"-?\d+(?:\.\d+)?")
+_FIELD_SEGMENT = regex(r"[A-Za-z_][A-Za-z0-9_]*|\d+")
+_DISPATCH_PATH = _IDENT_TEXT.sep_by(string("."), min=1).map(".".join)
+_COMMA = _WS >> string(",") << _WS
+
+
+def _parse_quoted(text: str) -> Ast.StrLit:
+    return Ast.StrLit(py_ast.literal_eval(text))
+
+
+def _parse_block_string(text: str) -> Ast.StrLit:
+    return Ast.StrLit(text[2:-2])
+
+
+expr_parser = forward_declaration()
+pattern_parser = forward_declaration()
+table_key_path_parser = forward_declaration()
+atom_parser = forward_declaration()
+value_atom_parser = forward_declaration()
+lambda_parser = forward_declaration()
+atomic_expr_parser = forward_declaration()
+apply_arg_parser = forward_declaration()
+postfix_expr_parser = forward_declaration()
+lambda_head_parser = forward_declaration()
+
+
+_quoted_string = regex(r'"(?:\\.|[^"\\])*"').map(_parse_quoted)
+_block_string = regex(r"(?s)\[\[.*?\]\]").map(_parse_block_string)
+_numlit = _NUM_TEXT.map(Ast.NumLit)
+_val_ident = _IDENT_TEXT.map(Ast.Ident)
+_op_ident = _OP_TEXT.map(Ast.Ident)
+
+
+@generate
+def _table_pattern():
+    yield string("{")
+    yield _WS
+    positional: list[Ast.Pattern] = []
+    named: list[tuple[str, str]] = []
+
+    if (yield string("}").result(True).optional()) is True:
+        return Ast.TablePattern((), ())
+
+    while True:
+        named_self = yield (string(":") >> _WS >> _IDENT_TEXT).optional()
+        if named_self is not None:
+            named.append((named_self, named_self))
+        else:
+            first = yield _IDENT_TEXT
+            target = yield (_WS >> string(":") >> _WS >> _IDENT_TEXT).optional()
+            if target is None:
+                positional.append(Ast.IdentPattern(first))
+            else:
+                named.append((first, target))
+        yield _WS
+        if (yield string("}").result(True).optional()) is True:
+            break
+        yield _COMMA
+
+    return Ast.TablePattern(tuple(positional), tuple(named))
+
+
+pattern_parser.become(_table_pattern | _IDENT_TEXT.map(Ast.IdentPattern))
+
+
+_table_key_atom = (
+    (string("[") >> _WS >> expr_parser << _WS << string("]"))
+    | _IDENT_TEXT.map(_table_field_key)
+    | _NUM_TEXT.map(_table_numeric_key)
+)
+
+
+@generate
+def _table_key_path():
+    first = yield _table_key_atom
+    path = [first]
+    while True:
+        seg = yield (
+            (string(".") >> _FIELD_SEGMENT).map(lambda item: ("dot", item))
+            | (string("[") >> _WS >> expr_parser << _WS << string("]")).map(
+                lambda item: ("index", item)
+            )
+        ).optional()
+        if seg is None:
+            break
+        if seg[0] == "dot":
+            value = seg[1]
+            path.append(
+                _table_numeric_key(value) if value.isdigit() else _table_field_key(value)
+            )
+        else:
+            path.append(seg[1])
+    return path
+
+
+table_key_path_parser.become(_table_key_path)
+
+
+def _build_inline_table(items: list[tuple[str, object]]) -> Ast.Table:
+    table = Ast.Table({})
+    positional_index = 1
+    saw_positional = False
+
+    for kind, payload in items:
+        if kind == "kv":
+            path, value = payload
+            if (
+                len(path) == 1
+                and isinstance(path[0], Ast.NumLit)
+                and path[0].lit.isdigit()
+                and saw_positional
+            ):
+                raise ValueError(
+                    "implicit list entries conflict with explicit numeric table keys"
+                )
+            table = _merge_table_ast(table, _nested_table_from_path(path, value))
+            continue
+
+        saw_positional = True
+        table = _merge_table_ast(
+            table,
+            Ast.Table({_table_numeric_key(str(positional_index)): payload}),
+        )
+        positional_index += 1
+
+    return table
+
+
+@generate
+def _table_literal_item():
+    keyed = yield (
+        (table_key_path_parser << _WS << string(":") << _WS).bind(
+            lambda path: expr_parser.map(lambda value: ("kv", (path, value)))
+        )
+    ).optional()
+    if keyed is not None:
+        return keyed
+    return ("pos", (yield expr_parser))
+
+
+@generate
+def _table_literal():
+    yield string("{")
+    yield _WS
+    if (yield string("}").result(True).optional()) is True:
+        return Ast.Table({})
+    items = yield _table_literal_item.sep_by(_COMMA, min=1)
+    yield _WS
+    yield string("}")
+    return _build_inline_table(items)
+
+
+@generate
+def _paren_expr():
+    yield string("(")
+    yield _WS
+    inner = yield expr_parser
+    yield _WS
+    yield string(")")
+    return inner
+
+
+value_atom_parser.become(
+    _table_literal
+    | _paren_expr
+    | _block_string
+    | _quoted_string
+    | _numlit
+    | _val_ident
+)
+
+atom_parser.become(
+    value_atom_parser
+    | _op_ident
+)
+
+
+@generate
+def _lambda_expr():
+    param = yield pattern_parser
+    yield _WS
+    yield string("->")
+    yield _WS
+    body = yield expr_parser
+    return Ast.Lambda(param=param, body=body)
+
+
+lambda_parser.become(_lambda_expr)
+
+
+@generate
+def _lambda_head_expr():
+    first = yield pattern_parser
+    params = [first]
+    yield _WS
+    yield string("->")
+    while True:
+        param = yield (_WS >> pattern_parser << _WS << string("->")).optional()
+        if param is None:
+            break
+        params.append(param)
+    yield _WS
+    yield eof
+    return _PendingLambda(tuple(params))
+
+
+lambda_head_parser.become(_lambda_head_expr)
+
+
+@generate
+def _tight_suffix():
+    return (
+        yield (
+            (string(".") >> _FIELD_SEGMENT).map(lambda item: ("dot", item))
+            | (string("[") >> _WS >> expr_parser << _WS << string("]")).map(
+                lambda item: ("index", item)
+            )
+        )
+    )
+
+
+@generate
+def _atomic_expr():
+    current = yield (lambda_parser | atom_parser)
+    for kind, payload in (yield _tight_suffix.many()):
+        if kind == "dot":
+            current = (
+                Ast.IndexAccess(current, Ast.NumLit(payload))
+                if payload.isdigit()
+                else Ast.FieldAccess(current, payload)
+            )
+        else:
+            current = Ast.IndexAccess(current, payload)
+    return current
+
+
+atomic_expr_parser.become(_atomic_expr)
+
+
+@generate
+def _apply_arg():
+    current = yield (lambda_parser | value_atom_parser)
+    for kind, payload in (yield _tight_suffix.many()):
+        if kind == "dot":
+            current = (
+                Ast.IndexAccess(current, Ast.NumLit(payload))
+                if payload.isdigit()
+                else Ast.FieldAccess(current, payload)
+            )
+        else:
+            current = Ast.IndexAccess(current, payload)
+    return current
+
+
+apply_arg_parser.become(_apply_arg)
+
+
+@generate
+def _free_dispatch_suffix():
+    yield _WS1
+    yield string(".")
+    path = yield _DISPATCH_PATH
+    return lambda cur: Ast.Apply(Ast.Ident("." + path), cur)
+
+
+@generate
+def _self_dispatch_suffix():
+    yield _WS1
+    yield string("\\")
+    path = yield _DISPATCH_PATH
+    return lambda cur: Ast.Apply(Ast.Ident("\\" + path), cur)
+
+
+@generate
+def _apply_suffix():
+    yield _WS1
+    arg = yield apply_arg_parser
+    return lambda cur: Ast.Apply(cur, arg)
+
+
+@generate
+def _postfix_expr():
+    current = yield atomic_expr_parser
+    for suffix in (yield (_free_dispatch_suffix | _self_dispatch_suffix | _apply_suffix).many()):
+        current = suffix(current)
+    return current
+
+
+postfix_expr_parser.become(_postfix_expr)
+
+
+@generate
+def _operator_expr():
+    current = yield postfix_expr_parser
+    rest = yield seq(op=_WS1 >> _OP_TEXT << _WS1, rhs=postfix_expr_parser).many()
+    for part in rest:
+        current = Ast.chain_apply(Ast.Ident(part["op"]), [current, part["rhs"]])
+    return current
+
+
+expr_parser.become(lambda_parser | _operator_expr)
+
+
+_expr_line = _WS >> expr_parser << _WS << eof
+
+
+@generate
+def _let_line():
+    pat = yield pattern_parser
+    yield _WS
+    yield string("=")
+    rest = yield regex(r".*")
+    yield eof
+    return ("let", pat, rest)
+
+
+@generate
+def _table_item_line():
+    path = yield table_key_path_parser
+    yield _WS
+    yield string(":")
+    rest = yield regex(r".*")
+    yield eof
+    return ("table", path, rest)
+
+
+def _finish_pending_lambda(pending: _PendingLambda, body: Ast.Ast) -> Ast.Ast:
+    result = body
+    for param in reversed(pending.params):
+        result = Ast.Lambda(param=param, body=result)
+    return result
+
+
+def _finish_pending_expr(
+    pending: _PendingLambda | _PendingApplyLambda, body: Ast.Ast
+) -> Ast.Ast:
+    lambda_expr = _finish_pending_lambda(_PendingLambda(pending.params), body)
+    if isinstance(pending, _PendingApplyLambda):
+        return Ast.Apply(pending.applyer, lambda_expr)
+    return lambda_expr
+
+
+def _parse_pending_expr(text: str) -> _PendingLambda | _PendingApplyLambda:
+    for i, ch in enumerate(text):
+        if i != 0 and not text[i - 1].isspace():
+            continue
+        suffix = text[i:].strip()
+        if not suffix:
+            continue
+        try:
+            pending = lambda_head_parser.parse(suffix)
+        except Exception:
+            continue
+        prefix = text[:i].strip()
+        if not prefix:
+            return pending
+        try:
+            return _PendingApplyLambda(_expr_line.parse(prefix), pending.params)
+        except Exception:
+            continue
+    raise ValueError("lambda expression is missing a body")
+
+
+def _parse_value_expr(text: str) -> Ast.Ast | _PendingLambda | _PendingApplyLambda | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        return _expr_line.parse(stripped)
+    except Exception as expr_error:
+        try:
+            return _parse_pending_expr(stripped)
+        except Exception as lambda_error:
+            raise expr_error from lambda_error
+
+
+def _parse_line_expr(text: str):
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("empty expression line")
+    try:
+        kind, pat, rest = _let_line.parse(stripped)
+        return _LineLet(pat, _parse_value_expr(rest))
+    except Exception:
+        pass
+    try:
+        kind, path, rest = _table_item_line.parse(stripped)
+        return _LineTableItem(path, _parse_value_expr(rest))
+    except Exception:
+        pass
+    value = _parse_value_expr(stripped)
+    if value is None:
+        raise ValueError("empty expression line")
+    return value
+
+
+def _skip_blank(lines: list[str], index: int) -> int:
+    while index < len(lines) and _is_blank(lines[index]):
+        index += 1
+    return index
+
+
+def _collect_logical_line(lines: list[str], index: int, indent: int) -> tuple[str, int]:
+    current = lines[index].strip()
+    delimiter_balance = _delimiter_delta(current)
+    index += 1
+    while True:
+        probe = _skip_blank(lines, index)
+        if probe >= len(lines):
+            return current, probe
+        next_line = lines[probe]
+        if (
+            delimiter_balance <= 0
+            and (
+                _indent_width(next_line) <= indent
+                or not _is_continuation_line(next_line)
+            )
+        ):
+            return current, index
+        fragment = next_line.strip()
+        current += " " + fragment
+        delimiter_balance += _delimiter_delta(fragment)
+        index = probe + 1
+
+
+def _collapse_block(items: list[object]) -> Ast.Ast:
+    if not items:
+        return Ast.Table({})
+
+    lets = [item for item in items if isinstance(item, _LineLet)]
+    exprs = [
+        Ast.Table(item.path)
+        if isinstance(item, _LineTableItem)
+        else item
+        for item in items
+        if not isinstance(item, _LineLet)
+    ]
+
+    if len(exprs) > 1 and all(isinstance(item, Ast.Table) for item in exprs):
+        merged = Ast.Table({})
+        for item in exprs:
+            merged = _merge_table_ast(merged, item)
+        result = merged
+    else:
+        result = exprs[-1] if exprs else Ast.Table({})
+
+    for item in reversed(lets):
+        if item.value is None or isinstance(item.value, _PendingLambda):
+            raise ValueError("let expression is missing a value")
+        result = Ast.LetIn(ident=item.pattern, expr=item.value, body=result)
+
+    return result
+
+
+def _parse_block(lines: list[str], index: int, indent: int) -> tuple[Ast.Ast, int]:
+    items: list[object] = []
+    index = _skip_blank(lines, index)
+
+    while index < len(lines):
+        if _is_blank(lines[index]):
+            index += 1
+            continue
+
+        current_indent = _indent_width(lines[index])
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            raise ValueError(f"unexpected indentation at line: {lines[index]!r}")
+
+        logical_line, index = _collect_logical_line(lines, index, indent)
+        item = _parse_line_expr(logical_line)
+
+        if (
+            isinstance(item, _LineLet | _LineTableItem)
+            and (
+                item.value is None
+                or isinstance(item.value, _PendingLambda | _PendingApplyLambda)
+            )
+        ) or isinstance(item, _PendingLambda | _PendingApplyLambda):
+            nested_index = _skip_blank(lines, index)
+            if nested_index >= len(lines):
+                raise ValueError("expected indented block")
+            child_indent = _indent_width(lines[nested_index])
+            if child_indent <= indent:
+                raise ValueError("expected indented block")
+            value, index = _parse_block(lines, nested_index, child_indent)
+            if isinstance(item, _LineLet):
+                value = (
+                    _finish_pending_expr(item.value, value)
+                    if isinstance(item.value, _PendingLambda | _PendingApplyLambda)
+                    else value
+                )
+                items.append(_LineLet(item.pattern, value))
+            elif isinstance(item, _LineTableItem):
+                value = (
+                    _finish_pending_expr(item.value, value)
+                    if isinstance(item.value, _PendingLambda | _PendingApplyLambda)
+                    else value
+                )
+                items.append(
+                    _LineTableItem(_nested_table_from_path(item.path, value).tbl, None)
+                )
+            else:
+                items.append(_finish_pending_expr(item, value))
+            continue
+
+        if isinstance(item, _LineTableItem):
+            if item.value is None or isinstance(item.value, _PendingLambda | _PendingApplyLambda):
+                raise ValueError("table item expression is missing a value")
+            items.append(_LineTableItem(_nested_table_from_path(item.path, item.value).tbl, None))
+            continue
+        if isinstance(item, _LineLet):
+            if item.value is None or isinstance(item.value, _PendingLambda | _PendingApplyLambda):
+                raise ValueError("let expression is missing a value")
+            items.append(item)
+            continue
+        if isinstance(item, _PendingLambda | _PendingApplyLambda):
+            raise ValueError("lambda expression is missing a body")
+
+        nested_index = _skip_blank(lines, index)
+        if nested_index < len(lines) and _indent_width(lines[nested_index]) > indent:
+            value, index = _parse_block(
+                lines,
+                nested_index,
+                _indent_width(lines[nested_index]),
+            )
+            item = Ast.Apply(item, value)
+
+        items.append(item)
+
+    return _collapse_block(items), index
 
 
 def _parse_expr(text: str):
-    return _Parser(text).parse()
+    lines = _strip_comments_and_split_lines(text)
+    ast, index = _parse_block(lines, 0, 0)
+    index = _skip_blank(lines, index)
+    if index != len(lines):
+        raise ValueError("unexpected trailing input")
+    return ast
 
 
-val_ident = _SingleRule(lambda text: _parse_ident(text, "IDENT"))
-op_ident = _SingleRule(lambda text: _parse_ident(text, "OP"))
-numlit = _SingleRule(_parse_num)
-strlit = _SingleRule(_parse_str)
-lambda_lit = _SingleRule(lambda text: _Parser(text).parse())
+def _parse_ident(text: str, parser):
+    return (_WS >> parser << _WS << eof).parse(text)
+
+
+val_ident = _SingleRule(lambda text: _parse_ident(text, _val_ident))
+op_ident = _SingleRule(lambda text: _parse_ident(text, _op_ident))
+numlit = _SingleRule(lambda text: (_WS >> _numlit << _WS << eof).parse(text))
+strlit = _SingleRule(
+    lambda text: (_WS >> (_quoted_string | _block_string) << _WS << eof).parse(text)
+)
+lambda_lit = _SingleRule(lambda text: (_WS >> lambda_parser << _WS << eof).parse(text))
 expr = _SingleRule(_parse_expr)

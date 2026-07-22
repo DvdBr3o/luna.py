@@ -276,9 +276,11 @@ tbl.k5
 def test_env_eval_meta_field_for_primitives_and_tables():
     env = Context().env
     assert env.eval_meta_field(Val.CstNum(1), Val.CstStr.from_strlit("+")) == Builtin.Number.add
+    string_tbl = env.lookup("String")
+    assert isinstance(string_tbl, Val.Tbl)
     assert env.eval_meta_field(
         Val.CstStr.from_strlit("hello"), Val.CstStr.from_strlit("len")
-    ) == env.lookup("String").at(Val.CstStr.from_strlit("len"))
+    ) == string_tbl.at(Val.CstStr.from_strlit("len"))
 
     meta = env.lookup("meta")
     assert meta is not None
@@ -299,3 +301,11 @@ def test_env_eval_meta_field_for_primitives_and_tables():
 def test_eval_operator_dispatch():
     assert eval(Rule.expr.parse("1 + 2")) == Val.CstNum(3)
     assert eval(Rule.expr.parse("(x -> x + 1) 41")) == Val.CstNum(42)
+
+
+def test_eval_equality_dispatch_returns_luna_truth_values():
+    assert eval(Rule.expr.parse('1 .if "true" "false"')) == Val.CstStr.from_strlit("true")
+    assert eval(Rule.expr.parse('(1 == 1) .if "true" "false"')) == Val.CstStr.from_strlit("true")
+    assert eval(Rule.expr.parse('(1 == 2) .if "true" "false"')) == Val.CstStr.from_strlit("false")
+    assert eval(Rule.expr.parse('("a" == "a") .if "true" "false"')) == Val.CstStr.from_strlit("true")
+    assert eval(Rule.expr.parse('("a" == "b") .if "true" "false"')) == Val.CstStr.from_strlit("false")

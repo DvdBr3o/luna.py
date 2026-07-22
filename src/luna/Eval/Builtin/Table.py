@@ -35,17 +35,25 @@ def fold(vals: List[Val]):
         raise
 
 
-@builtin(2)
-def equal(vals: List[Val]):
-    try:
-        return cast(Tbl, vals[0]).tbl == cast(Tbl, vals[1]).tbl
-    except:
-        raise
+def equal(nil: Tbl, true: Tbl):
+    @builtin(2)
+    def equal_impl(vals: List[Val]):
+        match (vals[0], vals[1]):
+            case (Tbl(lhs), Tbl(rhs)):
+                return true if lhs == rhs else nil
+            case _:
+                return nil
+
+    return equal_impl
 
 
-@builtin(2)
-def same(vals: List[Val]):
-    try:
-        return cast(Tbl, vals[0]).tag == cast(Tbl, vals[1]).tag
-    except:
-        raise
+def same(nil: Tbl, true: Tbl):
+    @builtin(2)
+    def same_impl(vals: List[Val]):
+        match (vals[0], vals[1]):
+            case (Tbl() as lhs, Tbl() as rhs):
+                return true if lhs.tag == rhs.tag else nil
+            case _:
+                return nil
+
+    return same_impl

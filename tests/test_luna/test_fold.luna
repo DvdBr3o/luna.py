@@ -1,0 +1,4 @@
+accumulate = lst ->
+    lst .Table.fold 0 init -> k -> v -> init + v
+
+accumulate { 1, 2, 3, 4 }

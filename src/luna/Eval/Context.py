@@ -62,11 +62,7 @@ class Env:
 
         match (applyer, applyee):
             case (Clo(env, param, body), applyee):
-                return (
-                    env.with_env(env._env)
-                    .with_env({param: applyee})
-                    .eval(body)
-                )
+                return env.with_env(env._env).with_env({param: applyee}).eval(body)
             case (Tbl() as tbl, applyee):
                 value = tbl.at(applyee)
                 if value is None:
@@ -106,8 +102,9 @@ class Env:
         return self.apply_val(self.eval_meta(value), field)
 
     @staticmethod
-    def default():
+    def default(current: Path | None = None):
         cststr = CstStr.from_strlit
+        current = current or Path.cwd()
 
         meta = Tbl({})
         Nil = Tbl({})
@@ -116,18 +113,28 @@ class Env:
                 meta: Nil,
             }
         )
+        true = Tbl({})
+        Nil.tbl.update(
+            {
+                cststr("equal"): Builtin.Table.equal(nil, true),
+                cststr("same"): Builtin.Table.same(nil, true),
+                cststr("=="): Builtin.Table.equal(nil, true),
+                cststr("==="): Builtin.Table.same(nil, true),
+            }
+        )
 
         return Env(
             {
-                "table": Tbl(
+                "Table": Tbl(
                     {
                         cststr("cat"): Builtin.Table.cat,
                         cststr("but"): Builtin.Table.but,
                         cststr("without"): Builtin.Table.without,
-                        cststr("equal"): Builtin.Table.equal,
-                        cststr("same"): Builtin.Table.same,
-                        cststr("=="): Builtin.Table.equal,
-                        cststr("==="): Builtin.Table.same,
+                        cststr("fold"): Builtin.Table.fold,
+                        cststr("equal"): Builtin.Table.equal(nil, true),
+                        cststr("same"): Builtin.Table.same(nil, true),
+                        cststr("=="): Builtin.Table.equal(nil, true),
+                        cststr("==="): Builtin.Table.same(nil, true),
                     }
                 ),
                 "Number": Tbl(
@@ -140,6 +147,8 @@ class Env:
                         cststr("-"): Builtin.Number.mns,
                         cststr("*"): Builtin.Number.mlt,
                         cststr("/"): Builtin.Number.div,
+                        cststr("=="): Builtin.Number.equal(nil, true),
+                        cststr("==="): Builtin.Number.same(nil, true),
                     }
                 ),
                 "String": Tbl(
@@ -149,6 +158,8 @@ class Env:
                         cststr("len"): Builtin.String.len_(nil),
                         cststr("at"): Builtin.String.at(nil),
                         cststr("sub"): Builtin.String.sub(nil),
+                        cststr("=="): Builtin.String.equal(nil, true),
+                        cststr("==="): Builtin.String.same(nil, true),
                     }
                 ),
                 "meta": meta,
@@ -170,8 +181,10 @@ class Env:
                 "Nil": Nil,
                 "nil": nil,
                 "false": nil,
-                "true": Tbl({}),
+                "true": true,
                 "if": Builtin.Cfg.if_(nil),
+                "load": Builtin.Io.load(nil, current),
+                "require": Builtin.Io.require(nil, current),
             }
         )
 
@@ -182,7 +195,7 @@ class Context:
 
     def __init__(self, path: Optional[Path] = None, env: Optional[Env] = None) -> None:
         self.path = (path or Path.cwd()).resolve()
-        self.env = env or Env.default()
+        self.env = env or Env.default(self.module_base)
 
     def with_env(self, env: Dict[str, Val.Val]) -> "Context":
         self.env = self.env.derive(env)
@@ -232,11 +245,15 @@ class Context:
         return expr.parse(self.read_path(target))
 
     def child_for_module(self, module_ref: str) -> "Context":
-        return Context(path=self.resolve_module_path(module_ref), env=self.env)
+        target = self.resolve_module_path(module_ref)
+        child = Context(path=target)
+        child.env = self.env.derive(Env.default(child.module_base)._env)
+        return child
 
     def eval_module(self, module_ref: str) -> Val.Val:
         target = self.resolve_module_path(module_ref)
-        child = Context(path=target, env=self.env)
+        child = Context(path=target)
+        child.env = self.env.derive(Env.default(child.module_base)._env)
         return child.eval(child.parse_path(target))
 
     def eval(self, ast: Ast.Ast):

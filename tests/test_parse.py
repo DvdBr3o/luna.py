@@ -1,5 +1,10 @@
+from pathlib import Path
+
 import luna.Parse.Rule as Rule
 import luna.Parse.Ast as Ast
+
+
+TEST_LUNA = Path(__file__).parent / "test_luna"
 
 
 def test_ident():
@@ -54,6 +59,14 @@ def test_expr_apply_and_table():
     assert Rule.expr.parse("foo.bar") == Ast.FieldAccess(
         Ast.Ident("foo"), "bar"
     )
+    assert Rule.expr.parse("foo .a.b.c") == Ast.Apply(
+        Ast.Ident(".a.b.c"),
+        Ast.Ident("foo"),
+    )
+    assert Rule.expr.parse("val \\a.b.c") == Ast.Apply(
+        Ast.Ident("\\a.b.c"),
+        Ast.Ident("val"),
+    )
     assert Rule.expr.parse("foo.1") == Ast.IndexAccess(
         Ast.Ident("foo"),
         Ast.NumLit("1"),
@@ -67,9 +80,9 @@ def test_expr_apply_and_table():
         "baz",
     )
     assert Rule.expr.parse('"1, 2, 3"\n    .split ","\n    .stol') == Ast.Apply(
-        Ast.Ident("stol"),
+        Ast.Ident(".stol"),
         Ast.chain_apply(
-            Ast.Ident("split"),
+            Ast.Ident(".split"),
             [
                 Ast.StrLit("1, 2, 3"),
                 Ast.StrLit(","),
@@ -85,9 +98,9 @@ def test_expr_apply_and_table():
         }
     )
     assert Rule.expr.parse("val .free_dispatch_f1 arg1 arg2 .free_dispatch_f2") == Ast.Apply(
-        Ast.Ident("free_dispatch_f2"),
+        Ast.Ident(".free_dispatch_f2"),
         Ast.chain_apply(
-            Ast.Ident("free_dispatch_f1"),
+            Ast.Ident(".free_dispatch_f1"),
             [
                 Ast.Ident("val"),
                 Ast.Ident("arg1"),
@@ -205,9 +218,105 @@ def test_expr_module_table():
                     Ast.StrLit("vulkan"),
                 ),
                 Ast.StrLit("vkCreateInstance"): Ast.Apply(
-                    Ast.Apply(Ast.Ident("symbol"), Ast.Ident("lib")),
+                    Ast.Apply(Ast.Ident(".symbol"), Ast.Ident("lib")),
                     Ast.StrLit("vkCreateInstance"),
                 ),
+            }
+        ),
+    )
+
+
+def test_expr_match_module_block_lambdas():
+    assert Rule.expr.parse(
+        """
+MismatchError:
+    create: _ ->
+        [meta]: MismatchError
+        """.strip()
+    ) == Ast.Table(
+        {
+            Ast.StrLit("MismatchError"): Ast.Table(
+                {
+                    Ast.StrLit("create"): Ast.Lambda(
+                        param=Ast.IdentPattern("_"),
+                        body=Ast.Table({Ast.Ident("meta"): Ast.Ident("MismatchError")}),
+                    )
+                }
+            )
+        }
+    )
+
+    assert Rule.expr.parse(
+        """
+match: x -> cands ->
+    cands .Table.fold {false, (MismatchError.create nil)} {matched, init} -> k -> v ->
+        v
+        """.strip()
+    ) == Ast.Table(
+        {
+            Ast.StrLit("match"): Ast.Lambda(
+                param=Ast.IdentPattern("x"),
+                body=Ast.Lambda(
+                    param=Ast.IdentPattern("cands"),
+                    body=Ast.Apply(
+                        applyer=Ast.chain_apply(
+                            Ast.Ident(".Table.fold"),
+                            [
+                                Ast.Ident("cands"),
+                                Ast.Table(
+                                    {
+                                        Ast.NumLit("1"): Ast.Ident("false"),
+                                        Ast.NumLit("2"): Ast.Apply(
+                                            Ast.FieldAccess(
+                                                Ast.Ident("MismatchError"), "create"
+                                            ),
+                                            Ast.Ident("nil"),
+                                        ),
+                                    }
+                                ),
+                            ],
+                        ),
+                        applyee=Ast.Lambda(
+                            param=Ast.TablePattern(
+                                positional=(
+                                    Ast.IdentPattern("matched"),
+                                    Ast.IdentPattern("init"),
+                                ),
+                                named=(),
+                            ),
+                            body=Ast.Lambda(
+                                param=Ast.IdentPattern("k"),
+                                body=Ast.Lambda(
+                                    param=Ast.IdentPattern("v"),
+                                    body=Ast.Ident("v"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        }
+    )
+
+    assert isinstance(
+        Rule.expr.parse((TEST_LUNA / "match.luna").read_text(encoding="utf-8")),
+        Ast.Table,
+    )
+
+
+def test_expr_indented_block_apply():
+    assert Rule.expr.parse(
+        """
+1 .match
+    1: "yep!"
+    a: "nop!"
+        """.strip()
+    ) == Ast.Apply(
+        Ast.Apply(Ast.Ident(".match"), Ast.NumLit("1")),
+        Ast.Table(
+            {
+                Ast.NumLit("1"): Ast.StrLit("yep!"),
+                Ast.StrLit("a"): Ast.StrLit("nop!"),
             }
         ),
     )

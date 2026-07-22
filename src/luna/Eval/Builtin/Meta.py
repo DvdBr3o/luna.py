@@ -14,11 +14,10 @@ def eval(nil: Tbl):
         from luna.Parse.Rule import expr
 
         [script] = vals
-        if script is CstStr:
-            return luna_eval(expr.parse(str(cast(CstStr, script).cst)))
-        else:
-            # TODO: Use `Optional` instead of nil, since the script can be evaled into `nil`.
-            return nil
+        if isinstance(script, CstStr):
+            return luna_eval(expr.parse(bytes(script.cst).decode("utf-8")))
+        # TODO: Use `Optional` instead of nil, since the script can be evaled into `nil`.
+        return nil
 
     return eval_impl
 

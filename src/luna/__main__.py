@@ -28,8 +28,8 @@ def stringify(val: Val) -> str:
                 f"{stringify(key)}: {stringify(value)}" for key, value in tbl.items()
             )
             return f"{{{inner}}}"
-        case Clo():
-            return "<closure>"
+        case Clo() as clo:
+            return f"{clo}"
         case BltClo():
             return "<builtin>"
         case BltCloCont():

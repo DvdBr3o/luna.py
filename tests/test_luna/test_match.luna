@@ -1,0 +1,6 @@
+{ :match } = require "match"
+
+1 .match
+    1: "yep!"
+    a: "nop!"
+    [meta]: a

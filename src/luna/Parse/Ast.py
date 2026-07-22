@@ -37,6 +37,31 @@ def _is_operator_ident(ident: str) -> bool:
     return bool(ident) and all(ch in "!@#$%^&*+-?/|~<>=" for ch in ident)
 
 
+def _resolve_dotted_path_from_value(env: Env, base: Val.Val, path: str) -> Val.Val:
+    cur = base
+    for part in path.split("."):
+        if not part:
+            continue
+        if isinstance(cur, Val.Tbl):
+            nxt = cur.at(Val.CstStr.from_strlit(part))
+            if nxt is None:
+                return _nil_value(env)
+            cur = nxt
+        else:
+            raise TypeError(f"Cannot resolve path `{path}` from non-table value {cur!r}")
+    return cur
+
+
+def _resolve_dotted_path_from_env(env: Env, path: str) -> Val.Val:
+    parts = [part for part in path.split(".") if part]
+    if not parts:
+        return _nil_value(env)
+    cur = env.lookup(parts[0])
+    if cur is None:
+        return _nil_value(env)
+    return _resolve_dotted_path_from_value(env, cur, ".".join(parts[1:])) if len(parts) > 1 else cur
+
+
 def _literal_binding_name(key: Ast) -> str | None:
     if isinstance(key, StrLit):
         return key.lit
@@ -98,6 +123,24 @@ class LetIn(Ast):
                 return env.with_env({ident: self.expr.eval(env)}).eval(self.body)
             case IdentPattern(ident):
                 return env.with_env({ident: self.expr.eval(env)}).eval(self.body)
+            case TablePattern(positional, named):
+                value = self.expr.eval(env)
+                if not isinstance(value, Val.Tbl):
+                    raise TypeError("Table pattern let expects a table value")
+                bindings: Dict[str, Val.Val] = {}
+                for i, pat in enumerate(positional, start=1):
+                    if not isinstance(pat, IdentPattern):
+                        raise NotImplementedError("Nested table pattern let is not implemented yet.")
+                    matched = value.at(Val.CstNum(i))
+                    if matched is None:
+                        raise IdentNotFoundError(pat.ident)
+                    bindings[pat.ident] = matched
+                for name, target in named:
+                    matched = value.at(Val.CstStr.from_strlit(target))
+                    if matched is None:
+                        raise IdentNotFoundError(target)
+                    bindings[name] = matched
+                return env.with_env(bindings).eval(self.body)
             case _:
                 raise NotImplementedError("Pattern let eval is not implemented yet.")
 
@@ -128,6 +171,17 @@ class Lambda(Ast):
                 bound = param
             case IdentPattern(ident):
                 bound = ident
+            case TablePattern():
+                bound = f"__pattern_arg_{id(self)}__"
+                return Val.Clo(
+                    env=env,
+                    param=bound,
+                    body=LetIn(
+                        ident=self.param,
+                        expr=Ident(bound),
+                        body=self.body,
+                    ),
+                )
             case _:
                 raise NotImplementedError("Pattern lambda eval is not implemented yet.")
         return Val.Clo(
@@ -161,6 +215,18 @@ class Apply(Ast):
     applyee: Ast
 
     def eval(self, env):
+        if isinstance(self.applyer, Ident) and self.applyer.ident.startswith("."):
+            lhs = env.eval(self.applyee)
+            operator = _resolve_dotted_path_from_env(env, self.applyer.ident[1:])
+            return env.apply_val(operator, lhs)
+        if isinstance(self.applyer, Ident) and self.applyer.ident.startswith("\\"):
+            lhs = env.eval(self.applyee)
+            operator = _resolve_dotted_path_from_value(
+                env,
+                env.eval_meta(lhs),
+                self.applyer.ident[1:],
+            )
+            return env.apply_val(operator, lhs)
         if isinstance(self.applyer, Ident) and _is_operator_ident(self.applyer.ident):
             lhs = env.eval(self.applyee)
             operator = env.eval_meta_field(

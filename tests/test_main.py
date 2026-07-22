@@ -35,6 +35,10 @@ def test_run_module_add_one_uses_operator_meta_dispatch():
     assert run_module("add_one", ["114"], cwd=TEST_ROOT) == CstNum(115)
 
 
+def test_run_module_match_uses_module_relative_require():
+    assert run_module("test_match", cwd=TEST_ROOT) == CstStr.from_strlit("yep!")
+
+
 def test_main_prints_result(monkeypatch, capsys):
     monkeypatch.chdir(TEST_ROOT)
 

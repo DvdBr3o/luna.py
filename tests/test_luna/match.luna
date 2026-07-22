@@ -1,0 +1,18 @@
+MismatchError:
+    to_string: self -> "none of branches matched!"
+    create: _ ->
+        [meta]: MismatchError
+    [meta].create: self -> self.create nil
+
+else: {}
+
+match: x -> cands ->
+    (cands .Table.fold {false, (MismatchError.create nil)} {matched, init} -> k -> v ->
+        (matched === false) .if (
+            (k === else) .if {true, v} (
+                (k == x) .if {true, v} {false, init}
+            )
+        ) (
+            {true, init}
+        )
+    ).2

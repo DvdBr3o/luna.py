@@ -16,7 +16,7 @@ def load(nil: Tbl, current: Path):
         # raise NotImplementedError()
         match path:
             case CstStr(cst):
-                target = current / str(cst)
+                target = current / bytes(cst).decode("utf-8")
                 if not target.exists():
                     return nil
                 return CstStr(target.read_bytes())
@@ -38,12 +38,16 @@ def require(nil: Tbl, current: Path):
         [path] = vals
         match path:
             case CstStr(cst):
-                eval(nil).fn(
+                return eval(nil).fn(
                     [
                         load(nil, current).fn(
                             [
                                 CstStr.from_strlit(
-                                    str(Path(*str(cst).split(".")).with_suffix(".luna"))
+                                    str(
+                                        Path(
+                                            *bytes(cst).decode("utf-8").split(".")
+                                        ).with_suffix(".luna")
+                                    )
                                 )
                             ]
                         )
