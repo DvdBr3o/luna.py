@@ -6,12 +6,24 @@ MismatchError:
 
 else: {}
 
+MatchType: { tag: "MatchType" }
+
+type: mta ->
+    [meta]: MatchType
+    typ: mta
+
 match: x -> cands ->
     (cands .Table.fold {false, (MismatchError.create nil)} {matched, init} -> k -> v ->
         (matched === false) .if (
-            (k === else) .if {true, v} (
-                (k == x) .if {true, v} {false, init}
-            )
+            (k[meta] === MatchType) .if (
+                (k.typ == x[meta]) .if {true, (
+                    ((decltype v) == "Closure") .and (_ -> v x) .or v
+                )} {false, init}
+            ) ((k === else) .if {true, v} (
+                (k == x) .if {true, (
+                    ((decltype v) == "Closure") .and (_ -> v x) .or v
+                )} {false, init}
+            ))
         ) (
             {true, init}
         )

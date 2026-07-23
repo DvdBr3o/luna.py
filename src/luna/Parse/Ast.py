@@ -24,13 +24,8 @@ def _nil_value(env: Env) -> Val.Val:
     return env.nil()
 
 
-def _lookup_table(env: Env, obj: Val.Val, index: Val.Val) -> Val.Val:
-    if not isinstance(obj, Val.Tbl):
-        raise TypeError(f"Cannot index non-table value: {obj!r}")
-    value = obj.at(index)
-    if value is None:
-        return _nil_value(env)
-    return value
+def _lookup_index(env: Env, obj: Val.Val, index: Val.Val) -> Val.Val:
+    return env.index_val(obj, index)
 
 
 def _is_operator_ident(ident: str) -> bool:
@@ -42,13 +37,7 @@ def _resolve_dotted_path_from_value(env: Env, base: Val.Val, path: str) -> Val.V
     for part in path.split("."):
         if not part:
             continue
-        if isinstance(cur, Val.Tbl):
-            nxt = cur.at(Val.CstStr.from_strlit(part))
-            if nxt is None:
-                return _nil_value(env)
-            cur = nxt
-        else:
-            raise TypeError(f"Cannot resolve path `{path}` from non-table value {cur!r}")
+        cur = env.index_val(cur, Val.CstStr.from_strlit(part))
     return cur
 
 
@@ -59,7 +48,11 @@ def _resolve_dotted_path_from_env(env: Env, path: str) -> Val.Val:
     cur = env.lookup(parts[0])
     if cur is None:
         return _nil_value(env)
-    return _resolve_dotted_path_from_value(env, cur, ".".join(parts[1:])) if len(parts) > 1 else cur
+    return (
+        _resolve_dotted_path_from_value(env, cur, ".".join(parts[1:]))
+        if len(parts) > 1
+        else cur
+    )
 
 
 def _literal_binding_name(key: Ast) -> str | None:
@@ -88,7 +81,7 @@ class NumLit(Ast):
     lit: str
 
     def eval(self, env):
-        return Val.CstNum(int(self.lit))
+        return Val.CstNum(float(self.lit))
 
 
 @dataclass(frozen=True)
@@ -130,7 +123,9 @@ class LetIn(Ast):
                 bindings: Dict[str, Val.Val] = {}
                 for i, pat in enumerate(positional, start=1):
                     if not isinstance(pat, IdentPattern):
-                        raise NotImplementedError("Nested table pattern let is not implemented yet.")
+                        raise NotImplementedError(
+                            "Nested table pattern let is not implemented yet."
+                        )
                     matched = value.at(Val.CstNum(i))
                     if matched is None:
                         raise IdentNotFoundError(pat.ident)
@@ -157,7 +152,18 @@ class Table(Ast):
             if ident is None:
                 continue
             bindings[ident] = Val.Lazy(lambda value=value: table_env.eval(value))
-        return Val.Tbl({table_env.eval(k): table_env.eval(v) for k, v in self.tbl.items()})
+        result: Dict[Val.Val, Val.Val] = {}
+        for key, value in self.tbl.items():
+            key_val = table_env.eval(key)
+            ident = _literal_binding_name(key)
+            if ident is None:
+                result[key_val] = table_env.eval(value)
+                continue
+            val = table_env.lookup(ident)
+            if val is None:
+                raise IdentNotFoundError(ident)
+            result[key_val] = val
+        return Val.Tbl(result)
 
 
 @dataclass(frozen=True)
@@ -197,7 +203,9 @@ class FieldAccess(Ast):
     field: str
 
     def eval(self, env):
-        return _lookup_table(env, env.eval(self.obj), Val.CstStr.from_strlit(self.field))
+        return _lookup_index(
+            env, env.eval(self.obj), Val.CstStr.from_strlit(self.field)
+        )
 
 
 @dataclass(frozen=True)
@@ -206,7 +214,7 @@ class IndexAccess(Ast):
     index: Ast
 
     def eval(self, env):
-        return _lookup_table(env, env.eval(self.obj), env.eval(self.index))
+        return _lookup_index(env, env.eval(self.obj), env.eval(self.index))
 
 
 @dataclass(frozen=True)

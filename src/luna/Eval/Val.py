@@ -15,6 +15,16 @@ class Val(ABC):
 
 
 class Lazy(Val):
+    """Deferred Luna value used for table-local bindings.
+
+    A Lazy stores a resolver closure instead of evaluating immediately. The
+    first force() call evaluates that resolver, caches the resulting Val, and
+    all later force() calls return the cached value. _forcing is a re-entry
+    guard: if the resolver tries to force the same Lazy while it is already
+    being evaluated, the binding is recursive (for example `foo: foo`) and we
+    report that cycle instead of recursing forever.
+    """
+
     def __init__(self, resolver: Callable[[], Val]) -> None:
         self._resolver = resolver
         self._forced = False
@@ -22,6 +32,7 @@ class Lazy(Val):
         self._value: Val | None = None
 
     def force(self) -> Val:
+        # lazy_force := cached_value | guarded resolver()
         if self._forced:
             return cast(Val, self._value)
         if self._forcing:

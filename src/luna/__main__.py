@@ -46,8 +46,7 @@ def run_module(
     module_ref: str, arg_exprs: list[str] | None = None, cwd: Path | None = None
 ) -> Val:
     context = Context(path=cwd or Path.cwd())
-    module_context = context.child_for_module(module_ref)
-    result = module_context.eval(module_context.parse_path(module_context.path))
+    result = context.require_module(module_ref)
     arg_exprs = arg_exprs or []
 
     if not arg_exprs:
@@ -62,7 +61,7 @@ def run_module(
             raise CliUsageError(
                 f"Module `{module_ref}` accepted fewer CLI args than provided."
             )
-        result = result.apply(eval_arg(module_context, arg_expr))
+        result = result.apply(eval_arg(context, arg_expr))
 
     return result
 

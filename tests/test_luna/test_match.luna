@@ -1,6 +1,11 @@
-{ :match } = require "match"
+{ :match, :type, :MatchType } = require "match"
 
 1 .match
-    1: "yep!"
+    [type Number]: x -> x + 3
+    -- 1: x -> x + 1
     a: "nop!"
     [meta]: a
+
+-- (((type Number)[meta]) == MatchType) .and "true" .or "false"
+-- MatchType
+-- (type Number)

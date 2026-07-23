@@ -23,14 +23,13 @@ def and_(nil: Tbl) -> BltClo:
     @builtin(2)
     def and_impl(vals: List[Val]):
         [lhs, rhs] = vals
-        if lhs is Tbl and cast(Tbl, lhs).tag == nil.tag:
+        if isinstance(lhs, Tbl) and lhs.tag == nil.tag:
             return nil
-        else:
-            match rhs:
-                case Clo(env, param, body):
-                    return env.with_env({param: nil}).eval(body)
-                case _:
-                    return rhs
+        match rhs:
+            case Clo(env, param, body):
+                return env.with_env({param: nil}).eval(body)
+            case _:
+                return rhs
 
     return and_impl
 
@@ -39,13 +38,12 @@ def or_(nil: Tbl) -> BltClo:
     @builtin(2)
     def or_impl(vals: List[Val]):
         [lhs, rhs] = vals
-        if lhs is Tbl and cast(Tbl, lhs).tag == nil.tag:
-            return rhs
-        else:
+        if isinstance(lhs, Tbl) and lhs.tag == nil.tag:
             match rhs:
                 case Clo(env, param, body):
                     return env.with_env({param: nil}).eval(body)
                 case _:
                     return rhs
+        return lhs
 
     return or_impl

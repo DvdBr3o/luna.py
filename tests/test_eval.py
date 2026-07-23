@@ -273,6 +273,21 @@ tbl.k5
     )
 
 
+def test_table_literal_named_fields_reuse_lazy_value_identity():
+    result = eval(
+        Rule.expr.parse(
+            """
+a: {}
+b: a
+            """.strip()
+        )
+    )
+    assert isinstance(result, Val.Tbl)
+    a = result.at(Val.CstStr.from_strlit("a"))
+    b = result.at(Val.CstStr.from_strlit("b"))
+    assert a is b
+
+
 def test_env_eval_meta_field_for_primitives_and_tables():
     env = Context().env
     assert env.eval_meta_field(Val.CstNum(1), Val.CstStr.from_strlit("+")) == Builtin.Number.add
@@ -296,6 +311,29 @@ def test_env_eval_meta_field_for_primitives_and_tables():
     assert env.eval_meta_field(
         table, Val.CstStr.from_strlit("greet")
     ) == Val.CstStr.from_strlit("world")
+    table_meta = env.lookup("Table")
+    assert isinstance(table_meta, Val.Tbl)
+    assert env.eval_meta_field(
+        Val.Tbl({}), Val.CstStr.from_strlit("===")
+    ) == table_meta.at(Val.CstStr.from_strlit("==="))
+
+
+def test_eval_index_meta_for_primitives():
+    env = Context().env
+    number = env.lookup("Number")
+    string = env.lookup("String")
+    assert number is not None
+    assert string is not None
+
+    assert env.eval(Rule.expr.parse("1[meta]")) == number
+    assert env.eval(Rule.expr.parse("1 meta")) == number
+    assert env.eval(Rule.expr.parse('"hello"[meta]')) == string
+    assert env.eval(Rule.expr.parse('"hello" meta')) == string
+
+
+def test_eval_decltype_returns_luna_string():
+    assert eval(Rule.expr.parse("decltype 1")) == Val.CstStr.from_strlit("Number")
+    assert eval(Rule.expr.parse('"x" .decltype')) == Val.CstStr.from_strlit("String")
 
 
 def test_eval_operator_dispatch():
@@ -309,3 +347,11 @@ def test_eval_equality_dispatch_returns_luna_truth_values():
     assert eval(Rule.expr.parse('(1 == 2) .if "true" "false"')) == Val.CstStr.from_strlit("false")
     assert eval(Rule.expr.parse('("a" == "a") .if "true" "false"')) == Val.CstStr.from_strlit("true")
     assert eval(Rule.expr.parse('("a" == "b") .if "true" "false"')) == Val.CstStr.from_strlit("false")
+
+
+def test_eval_cfg_and_or():
+    ctx = Context()
+    assert ctx.eval(Rule.expr.parse("1 .and 3")) == Val.CstNum(3)
+    assert ctx.eval(Rule.expr.parse("false .and 3")) == ctx.eval(Rule.expr.parse("nil"))
+    assert ctx.eval(Rule.expr.parse("1 .or 3")) == Val.CstNum(1)
+    assert ctx.eval(Rule.expr.parse("false .or 3")) == Val.CstNum(3)

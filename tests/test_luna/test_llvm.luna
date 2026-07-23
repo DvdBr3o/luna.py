@@ -1,0 +1,125 @@
+-- [[
+```c
+#include <stdio.h>
+
+void print_val(int val) {
+    printf("Val: %d\n", val);
+}
+
+int main() {
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 3; j++) {
+            if (j == 1) {
+                print_val(i * 10 + j);
+            }
+        }
+    }
+    return 0;
+}
+```
+
+```llvm
+; 1. 声明外部 C 标准库函数 printf
+declare i32 @printf(i8*, ...)
+
+; 2. 定义全局字符串常量（用于 printf 打印格式）
+@.str = private unnamed_addr constant [10 x i8] c"Val: %d\0A\00", align 1
+
+; -------------------------------------------------------------
+; 自定义函数：print_val(int val)
+; -------------------------------------------------------------
+define void @print_val(i32 %val) {
+entry:
+    ; 获取格式化字符串首地址指针 (i8*)
+    %str_ptr = getelementptr inbounds [10 x i8], [10 x i8]* @.str, i64 0, i64 0
+    
+    ; 外部函数调用：调用 printf
+    call i32 (i8*, ...) @printf(i8* %str_ptr, i32 %val)
+    ret void
+}
+
+; -------------------------------------------------------------
+; 主函数：main()
+; -------------------------------------------------------------
+define i32 @main() {
+entry:
+    br label %outer.cond
+
+; --- 外层循环 (i = 0; i < 2; i++) ---
+outer.cond:
+    ; 内部 phi 节点用于跟踪外层循环变量 i，初值为 0
+    %i = phi i32 [ 0, %entry ], [ %i.next, %outer.inc ]
+    %outer.cmp = icmp slt i32 %i, 2
+    br i1 %outer.cmp, label %outer.body, label %outer.end
+
+outer.body:
+    br label %inner.cond
+
+; --- 内层循环 (j = 0; j < 3; j++) ---
+inner.cond:
+    ; phi 节点用于跟踪内层循环变量 j，初值为 0
+    %j = phi i32 [ 0, %outer.body ], [ %j.next, %inner.inc ]
+    %inner.cmp = icmp slt i32 %j, 3
+    br i1 %inner.cmp, label %inner.body, label %inner.end
+
+inner.body:
+    ; --- 条件分支：if (j == 1) ---
+    %if.cmp = icmp eq i32 %j, 1
+    br i1 %if.cmp, label %if.then, label %inner.inc
+
+if.then:
+    ; 计算 val = i * 10 + j
+    %mul = mul i32 %i, 10
+    %val = add i32 %mul, %j
+    
+    ; 自定义函数调用：调用 @print_val
+    call void @print_val(i32 %val)
+    br label %inner.inc
+
+inner.inc:
+    %j.next = add i32 %j, 1
+    br label %inner.cond
+
+inner.end:
+    br label %outer.inc
+
+outer.inc:
+    %i.next = add i32 %i, 1
+    br label %outer.cond
+
+outer.end:
+    ret i32 0
+}
+```
+
+]]
+
+{
+    declare, define, struct, global, constant, c
+    i32, i8, void, va_args
+    getelementptr, inbounds, call, ret, br, phi, icmp
+    var
+} = llvm = require "llvm"
+
+target:
+    datalayout: "..."
+    triple: "x86_64-unknown-linux-gnu"
+
+symbols:
+    printf:         declare i32 {*i8, va_args}
+    str:            -- TODO:
+    MAX_SIZE:       constant i32 100 \align 4
+
+    print_val:      define void {val: i32} =>
+        entry:
+            var.str_ptr <- getelementptr inbounds ...
+            call printf {var.str_ptr, val}
+            ret void
+
+    main:           define void {} =>
+        entry:
+            br outer.cond
+
+        outer.cond:
+            var.i           <- phi i32 {{0, entry}, {var.i.next, outer.inc}}
+            var.outer.cmp   <- icmp slt i32 {var.i, 2}

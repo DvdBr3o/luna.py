@@ -64,10 +64,9 @@ class Env:
             case (Clo(env, param, body), applyee):
                 return env.with_env(env._env).with_env({param: applyee}).eval(body)
             case (Tbl() as tbl, applyee):
-                value = tbl.at(applyee)
-                if value is None:
-                    return self.nil()
-                return value
+                return self.index_val(tbl, applyee)
+            case (Val.CstNum() | Val.CstStr(), applyee):
+                return self.index_val(applyer, applyee)
             case (BltClo(arity, fn), applyee):
                 if arity == 1:
                     return fn([applyee])
@@ -78,6 +77,24 @@ class Env:
                 return BltCloCont(BltClo(arity, fn), argc + 1, [*argv, applyee])
             case _:
                 raise TypeError(f"Cannot apply value {applyer!r} to {applyee!r}")
+
+    def index_val(self, obj: Val.Val, index: Val.Val) -> Val.Val:
+        meta = self.lookup("meta")
+        if meta is not None and index == meta:
+            return self.eval_meta(obj)
+
+        match obj:
+            case Tbl() as tbl:
+                value = tbl.at(index)
+                if value is None:
+                    return self.nil()
+                return value
+            case Val.CstNum() | Val.CstStr():
+                return self.nil()
+            case Val.Clo() | Val.BltClo() | Val.BltCloCont():
+                return self.nil()
+            case _:
+                return self.nil()
 
     def eval_meta(self, value: Val.Val) -> Val.Val:
         meta = self.lookup("meta")
@@ -92,7 +109,8 @@ class Env:
                 string = self.lookup("String")
                 return string if string is not None else self.nil()
             case Tbl() as tbl:
-                return tbl.at(meta) or self.nil()
+                table = self.lookup("Table")
+                return tbl.at(meta) or table or self.nil()
             case Val.Clo() | Val.BltClo() | Val.BltCloCont():
                 return self.apply_val(value, meta)
             case _:
@@ -163,26 +181,26 @@ class Env:
                     }
                 ),
                 "meta": meta,
-                "type": Tbl(
+                "types": Tbl(
                     {
-                        meta: Tbl(
-                            {
-                                # TODO:
-                            }
+                        cststr("Number"): cststr("Number"),
+                        cststr("String"): cststr("String"),
+                        cststr("Table"): cststr("Table"),
+                        cststr("Closure"): cststr("Closure"),
+                        cststr("BuiltinClosure"): cststr("BuiltinClosure"),
+                        cststr("BuiltinClosureContinuation"): cststr(
+                            "BuiltinClosureContinuation"
                         ),
-                        cststr("CstNum"): Tbl({}),
-                        cststr("CstStr"): Tbl({}),
-                        cststr("Tbl"): Tbl({}),
-                        cststr("Clo"): Tbl({}),
-                        cststr("BltClo"): Tbl({}),
-                        cststr("BltCloCont"): Tbl({}),
                     }
                 ),
+                "decltype": Builtin.Meta.decltype,
                 "Nil": Nil,
                 "nil": nil,
                 "false": nil,
                 "true": true,
                 "if": Builtin.Cfg.if_(nil),
+                "and": Builtin.Cfg.and_(nil),
+                "or": Builtin.Cfg.or_(nil),
                 "load": Builtin.Io.load(nil, current),
                 "require": Builtin.Io.require(nil, current),
             }
@@ -192,10 +210,18 @@ class Env:
 class Context:
     path: Path
     env: Env
+    module_cache: Dict[Path, Val.Val]
 
-    def __init__(self, path: Optional[Path] = None, env: Optional[Env] = None) -> None:
+    def __init__(
+        self,
+        path: Optional[Path] = None,
+        env: Optional[Env] = None,
+        module_cache: Optional[Dict[Path, Val.Val]] = None,
+    ) -> None:
         self.path = (path or Path.cwd()).resolve()
+        self.module_cache = module_cache if module_cache is not None else {}
         self.env = env or Env.default(self.module_base)
+        self._install_path_builtins()
 
     def with_env(self, env: Dict[str, Val.Val]) -> "Context":
         self.env = self.env.derive(env)
@@ -203,6 +229,7 @@ class Context:
 
     def with_path(self, path: Path) -> "Context":
         self.path = path.resolve()
+        self._install_path_builtins()
         return self
 
     @property
@@ -244,17 +271,35 @@ class Context:
 
         return expr.parse(self.read_path(target))
 
+    def _path_builtins(self) -> Dict[str, Val.Val]:
+        nil = self.env.nil()
+        return {
+            "load": Builtin.Io.load(nil, self.module_base),
+            "require": Builtin.Io.require(nil, self.module_base, self.require_module),
+        }
+
+    def _install_path_builtins(self) -> None:
+        self.env._env.update(self._path_builtins())
+
     def child_for_module(self, module_ref: str) -> "Context":
         target = self.resolve_module_path(module_ref)
-        child = Context(path=target)
-        child.env = self.env.derive(Env.default(child.module_base)._env)
-        return child
+        return Context(
+            path=target,
+            env=self.env.derive({}),
+            module_cache=self.module_cache,
+        )
+
+    def require_module(self, module_ref: str) -> Val.Val:
+        target = self.resolve_module_path(module_ref)
+        if target in self.module_cache:
+            return self.module_cache[target]
+        child = self.child_for_module(module_ref)
+        result = child.eval(child.parse_path(target))
+        self.module_cache[target] = result
+        return result
 
     def eval_module(self, module_ref: str) -> Val.Val:
-        target = self.resolve_module_path(module_ref)
-        child = Context(path=target)
-        child.env = self.env.derive(Env.default(child.module_base)._env)
-        return child.eval(child.parse_path(target))
+        return self.require_module(module_ref)
 
     def eval(self, ast: Ast.Ast):
         return ast.eval(self.env)

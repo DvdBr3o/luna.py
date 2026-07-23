@@ -1,5 +1,5 @@
 from luna.Eval.Val import Val, CstStr, Tbl, builtin
-from typing import List
+from typing import Callable, List
 from pathlib import Path
 
 
@@ -24,7 +24,7 @@ def load(nil: Tbl, current: Path):
     return load_impl
 
 
-def require(nil: Tbl, current: Path):
+def require(nil: Tbl, current: Path, require_module: Callable[[str], Val] | None = None):
     @builtin(1)
     def require_impl(vals: List[Val]):
         """
@@ -38,6 +38,9 @@ def require(nil: Tbl, current: Path):
         [path] = vals
         match path:
             case CstStr(cst):
+                module_ref = bytes(cst).decode("utf-8")
+                if require_module is not None:
+                    return require_module(module_ref)
                 return eval(nil).fn(
                     [
                         load(nil, current).fn(
@@ -45,7 +48,7 @@ def require(nil: Tbl, current: Path):
                                 CstStr.from_strlit(
                                     str(
                                         Path(
-                                            *bytes(cst).decode("utf-8").split(".")
+                                            *module_ref.split(".")
                                         ).with_suffix(".luna")
                                     )
                                 )

@@ -10,14 +10,17 @@ import luna.Parse.Ast as Ast
 
 
 def _table_field_key(name: str) -> Ast.StrLit:
+    # table_field_key := ident_text -> string-literal key
     return Ast.StrLit(name)
 
 
 def _table_numeric_key(num: str) -> Ast.NumLit:
+    # table_numeric_key := num_text -> number-literal key
     return Ast.NumLit(num)
 
 
 def _nested_table_from_path(path: Sequence[Ast.Ast], value: Ast.Ast) -> Ast.Table:
+    # nested_table := key_path ':' value -> {k1: {k2: ... value}}
     if not path:
         raise ValueError("table path cannot be empty")
     expr = value
@@ -27,6 +30,7 @@ def _nested_table_from_path(path: Sequence[Ast.Ast], value: Ast.Ast) -> Ast.Tabl
 
 
 def _merge_table_ast(lhs: Ast.Table, rhs: Ast.Table) -> Ast.Table:
+    # table_merge := table table -> merged table, recursively merging child tables.
     merged = dict(lhs.tbl)
     for key, value in rhs.tbl.items():
         if key in merged:
@@ -41,6 +45,8 @@ def _merge_table_ast(lhs: Ast.Table, rhs: Ast.Table) -> Ast.Table:
 
 
 def _strip_comments_and_split_lines(src: str) -> list[str]:
+    # source_lines := (normal | quoted_string | block_string | comment)* -> line*
+    # comment := '--' not-newline* | '--' ws? '[[' any* ']]'
     lines: list[str] = []
     buf: list[str] = []
     i = 0
@@ -127,6 +133,7 @@ def _strip_comments_and_split_lines(src: str) -> list[str]:
 
 
 def _indent_width(line: str) -> int:
+    # indent_width := (' ' -> 1 | '\t' -> 4)* before first non-space char
     width = 0
     for ch in line:
         if ch == " ":
@@ -139,15 +146,18 @@ def _indent_width(line: str) -> int:
 
 
 def _is_blank(line: str) -> bool:
+    # blank_line := ws eof
     return not line.strip()
 
 
 def _is_continuation_line(text: str) -> bool:
+    # continuation_line := ws ('.' | '\\') rest
     stripped = text.lstrip()
     return bool(stripped) and stripped[0] in ".\\"
 
 
 def _delimiter_delta(text: str) -> int:
+    # delimiter_delta := count(open_delim) - count(close_delim), ignoring strings.
     delta = 0
     i = 0
     state = "normal"
@@ -222,43 +232,70 @@ class _LineTableItem:
     value: Ast.Ast | _PendingLambda | _PendingApplyLambda | None
 
 
+# ws := (" " | "\t")*
 _WS = regex(r"[ \t]*")
+# ws1 := (" " | "\t")+
 _WS1 = regex(r"[ \t]+")
+# ident_text := [A-Za-z_][A-Za-z0-9_]*
 _IDENT_TEXT = regex(r"[A-Za-z_][A-Za-z0-9_]*")
+# op_text := one-or-more symbolic operator chars.
 _OP_TEXT = regex(r"[!@#$%^&*+\-?/|~<>=]+")
+# num_text := "-"? digit+ ("." digit+)?
 _NUM_TEXT = regex(r"-?\d+(?:\.\d+)?")
+# field_segment := ident_text | digit+
 _FIELD_SEGMENT = regex(r"[A-Za-z_][A-Za-z0-9_]*|\d+")
+# dispatch_path := ident_text ("." ident_text)*
 _DISPATCH_PATH = _IDENT_TEXT.sep_by(string("."), min=1).map(".".join)
+# comma := ws >> "," >> ws
 _COMMA = _WS >> string(",") << _WS
 
 
 def _parse_quoted(text: str) -> Ast.StrLit:
+    # quoted_value := Python-literal-decoded quoted_string
     return Ast.StrLit(py_ast.literal_eval(text))
 
 
 def _parse_block_string(text: str) -> Ast.StrLit:
+    # block_string_value := '[[' body ']]' -> body
     return Ast.StrLit(text[2:-2])
 
 
+# expr := lambda | operator_expr
 expr_parser = forward_declaration()
+# pattern := table_pattern | ident_pattern
 pattern_parser = forward_declaration()
+# table_key_path := table_key_atom (("." field_segment) | ("[" expr "]"))*
 table_key_path_parser = forward_declaration()
+# atom := value_atom | op_ident
 atom_parser = forward_declaration()
+# value_atom := table_literal | paren_expr | block_string | string | num | ident
 value_atom_parser = forward_declaration()
+# lambda := pattern >> ws >> "->" >> ws >> expr
 lambda_parser = forward_declaration()
+# atomic_expr := (lambda | atom) tight_suffix*
 atomic_expr_parser = forward_declaration()
+# apply_arg := (lambda | value_atom) tight_suffix*
 apply_arg_parser = forward_declaration()
+# postfix_expr := atomic_expr (free_dispatch | self_dispatch | apply_suffix)*
 postfix_expr_parser = forward_declaration()
+# lambda_head := pattern ("->" pattern)* "->" eof
 lambda_head_parser = forward_declaration()
 
 
+# quoted_string := '"' escaped-or-normal-char* '"'
 _quoted_string = regex(r'"(?:\\.|[^"\\])*"').map(_parse_quoted)
+# block_string := "[[" any* "]]"
 _block_string = regex(r"(?s)\[\[.*?\]\]").map(_parse_block_string)
+# numlit := num_text
 _numlit = _NUM_TEXT.map(Ast.NumLit)
+# val_ident := ident_text
 _val_ident = _IDENT_TEXT.map(Ast.Ident)
+# op_ident := op_text
 _op_ident = _OP_TEXT.map(Ast.Ident)
 
 
+# table_pattern := "{" >> ws >> (":" ident | ident (":" ident)?)
+#                  (comma (":" ident | ident (":" ident)?))* >> ws >> "}"
 @generate
 def _table_pattern():
     yield string("{")
@@ -288,9 +325,11 @@ def _table_pattern():
     return Ast.TablePattern(tuple(positional), tuple(named))
 
 
+# pattern := table_pattern | ident_text
 pattern_parser.become(_table_pattern | _IDENT_TEXT.map(Ast.IdentPattern))
 
 
+# table_key_atom := "[" >> ws >> expr >> ws >> "]" | ident_text | num_text
 _table_key_atom = (
     (string("[") >> _WS >> expr_parser << _WS << string("]"))
     | _IDENT_TEXT.map(_table_field_key)
@@ -298,6 +337,7 @@ _table_key_atom = (
 )
 
 
+# table_key_path := table_key_atom (("." field_segment) | ("[" ws expr ws "]"))*
 @generate
 def _table_key_path():
     first = yield _table_key_atom
@@ -321,6 +361,7 @@ def _table_key_path():
     return path
 
 
+# table_key_path := table_key_atom (("." field_segment) | ("[" ws expr ws "]"))*
 table_key_path_parser.become(_table_key_path)
 
 
@@ -354,6 +395,7 @@ def _build_inline_table(items: list[tuple[str, object]]) -> Ast.Table:
     return table
 
 
+# table_literal_item := (table_key_path >> ws >> ":" >> ws >> expr) | expr
 @generate
 def _table_literal_item():
     keyed = yield (
@@ -366,6 +408,7 @@ def _table_literal_item():
     return ("pos", (yield expr_parser))
 
 
+# table_literal := "{" >> ws >> (table_literal_item (comma table_literal_item)*)? >> ws >> "}"
 @generate
 def _table_literal():
     yield string("{")
@@ -378,6 +421,7 @@ def _table_literal():
     return _build_inline_table(items)
 
 
+# paren_expr := "(" >> ws >> expr >> ws >> ")"
 @generate
 def _paren_expr():
     yield string("(")
@@ -388,6 +432,7 @@ def _paren_expr():
     return inner
 
 
+# value_atom := table_literal | paren_expr | block_string | quoted_string | numlit | val_ident
 value_atom_parser.become(
     _table_literal
     | _paren_expr
@@ -397,12 +442,14 @@ value_atom_parser.become(
     | _val_ident
 )
 
+# atom := value_atom | op_ident
 atom_parser.become(
     value_atom_parser
     | _op_ident
 )
 
 
+# lambda := pattern >> ws >> "->" >> ws >> expr
 @generate
 def _lambda_expr():
     param = yield pattern_parser
@@ -413,9 +460,11 @@ def _lambda_expr():
     return Ast.Lambda(param=param, body=body)
 
 
+# lambda := pattern >> ws >> "->" >> ws >> expr
 lambda_parser.become(_lambda_expr)
 
 
+# lambda_head := pattern >> ws >> "->" (ws pattern ws "->")* >> ws >> eof
 @generate
 def _lambda_head_expr():
     first = yield pattern_parser
@@ -432,9 +481,11 @@ def _lambda_head_expr():
     return _PendingLambda(tuple(params))
 
 
+# lambda_head := pattern >> ws >> "->" (ws pattern ws "->")* >> ws >> eof
 lambda_head_parser.become(_lambda_head_expr)
 
 
+# tight_suffix := ("." field_segment) | ("[" >> ws >> expr >> ws >> "]")
 @generate
 def _tight_suffix():
     return (
@@ -447,6 +498,7 @@ def _tight_suffix():
     )
 
 
+# atomic_expr := (lambda | atom) tight_suffix*
 @generate
 def _atomic_expr():
     current = yield (lambda_parser | atom_parser)
@@ -462,9 +514,11 @@ def _atomic_expr():
     return current
 
 
+# atomic_expr := (lambda | atom) tight_suffix*
 atomic_expr_parser.become(_atomic_expr)
 
 
+# apply_arg := (lambda | value_atom) tight_suffix*
 @generate
 def _apply_arg():
     current = yield (lambda_parser | value_atom_parser)
@@ -480,9 +534,11 @@ def _apply_arg():
     return current
 
 
+# apply_arg := (lambda | value_atom) tight_suffix*
 apply_arg_parser.become(_apply_arg)
 
 
+# free_dispatch := ws1 >> "." >> dispatch_path
 @generate
 def _free_dispatch_suffix():
     yield _WS1
@@ -491,6 +547,7 @@ def _free_dispatch_suffix():
     return lambda cur: Ast.Apply(Ast.Ident("." + path), cur)
 
 
+# self_dispatch := ws1 >> "\\" >> dispatch_path
 @generate
 def _self_dispatch_suffix():
     yield _WS1
@@ -499,6 +556,7 @@ def _self_dispatch_suffix():
     return lambda cur: Ast.Apply(Ast.Ident("\\" + path), cur)
 
 
+# apply_suffix := ws1 >> apply_arg
 @generate
 def _apply_suffix():
     yield _WS1
@@ -506,6 +564,7 @@ def _apply_suffix():
     return lambda cur: Ast.Apply(cur, arg)
 
 
+# postfix_expr := atomic_expr (free_dispatch | self_dispatch | apply_suffix)*
 @generate
 def _postfix_expr():
     current = yield atomic_expr_parser
@@ -514,9 +573,11 @@ def _postfix_expr():
     return current
 
 
+# postfix_expr := atomic_expr (free_dispatch | self_dispatch | apply_suffix)*
 postfix_expr_parser.become(_postfix_expr)
 
 
+# operator_expr := postfix_expr (ws1 op_text ws1 postfix_expr)*
 @generate
 def _operator_expr():
     current = yield postfix_expr_parser
@@ -526,22 +587,27 @@ def _operator_expr():
     return current
 
 
+# expr := lambda | operator_expr
 expr_parser.become(lambda_parser | _operator_expr)
 
 
+# expr_line := ws >> expr >> ws >> eof
 _expr_line = _WS >> expr_parser << _WS << eof
 
 
+# let_line := pattern >> ws >> assignment_equal >> raw-rest >> eof
+# assignment_equal := "=" !op_char
 @generate
 def _let_line():
     pat = yield pattern_parser
     yield _WS
-    yield string("=")
+    yield regex(r"=(?![!@#$%^&*+\-?/|~<>=])")
     rest = yield regex(r".*")
     yield eof
     return ("let", pat, rest)
 
 
+# table_item_line := table_key_path >> ws >> ":" >> raw-rest >> eof
 @generate
 def _table_item_line():
     path = yield table_key_path_parser
@@ -552,6 +618,7 @@ def _table_item_line():
     return ("table", path, rest)
 
 
+# finish_pending_lambda := pending_params + indented_block_expr -> nested Lambda
 def _finish_pending_lambda(pending: _PendingLambda, body: Ast.Ast) -> Ast.Ast:
     result = body
     for param in reversed(pending.params):
@@ -559,6 +626,7 @@ def _finish_pending_lambda(pending: _PendingLambda, body: Ast.Ast) -> Ast.Ast:
     return result
 
 
+# finish_pending_expr := pending_lambda | (applyer pending_lambda)
 def _finish_pending_expr(
     pending: _PendingLambda | _PendingApplyLambda, body: Ast.Ast
 ) -> Ast.Ast:
@@ -568,6 +636,7 @@ def _finish_pending_expr(
     return lambda_expr
 
 
+# pending_expr := lambda_head | (expr_line >> ws1 >> lambda_head)
 def _parse_pending_expr(text: str) -> _PendingLambda | _PendingApplyLambda:
     for i, ch in enumerate(text):
         if i != 0 and not text[i - 1].isspace():
@@ -589,6 +658,7 @@ def _parse_pending_expr(text: str) -> _PendingLambda | _PendingApplyLambda:
     raise ValueError("lambda expression is missing a body")
 
 
+# value_expr := expr_line | pending_expr | empty
 def _parse_value_expr(text: str) -> Ast.Ast | _PendingLambda | _PendingApplyLambda | None:
     stripped = text.strip()
     if not stripped:
@@ -602,6 +672,7 @@ def _parse_value_expr(text: str) -> Ast.Ast | _PendingLambda | _PendingApplyLamb
             raise expr_error from lambda_error
 
 
+# line_expr := let_line | table_item_line | value_expr
 def _parse_line_expr(text: str):
     stripped = text.strip()
     if not stripped:
@@ -622,12 +693,14 @@ def _parse_line_expr(text: str):
     return value
 
 
+# blank* := empty-or-whitespace-only line*
 def _skip_blank(lines: list[str], index: int) -> int:
     while index < len(lines) and _is_blank(lines[index]):
         index += 1
     return index
 
 
+# logical_line := physical_line (continued_line | delimiter-balanced-line)*
 def _collect_logical_line(lines: list[str], index: int, indent: int) -> tuple[str, int]:
     current = lines[index].strip()
     delimiter_balance = _delimiter_delta(current)
@@ -651,6 +724,7 @@ def _collect_logical_line(lines: list[str], index: int, indent: int) -> tuple[st
         index = probe + 1
 
 
+# block_expr := (let_expr | table_item | expr)* folded into one expression
 def _collapse_block(items: list[object]) -> Ast.Ast:
     if not items:
         return Ast.Table({})
@@ -680,6 +754,7 @@ def _collapse_block(items: list[object]) -> Ast.Ast:
     return result
 
 
+# block := line_expr (indented block as lambda/table/apply body)* until dedent
 def _parse_block(lines: list[str], index: int, indent: int) -> tuple[Ast.Ast, int]:
     items: list[object] = []
     index = _skip_blank(lines, index)
@@ -759,6 +834,7 @@ def _parse_block(lines: list[str], index: int, indent: int) -> tuple[Ast.Ast, in
     return _collapse_block(items), index
 
 
+# module_expr := comment-stripped block eof
 def _parse_expr(text: str):
     lines = _strip_comments_and_split_lines(text)
     ast, index = _parse_block(lines, 0, 0)
@@ -768,15 +844,22 @@ def _parse_expr(text: str):
     return ast
 
 
+# single_ident := ws >> (val_ident | op_ident) >> ws >> eof
 def _parse_ident(text: str, parser):
     return (_WS >> parser << _WS << eof).parse(text)
 
 
+# public val_ident := ws >> ident_text >> ws >> eof
 val_ident = _SingleRule(lambda text: _parse_ident(text, _val_ident))
+# public op_ident := ws >> op_text >> ws >> eof
 op_ident = _SingleRule(lambda text: _parse_ident(text, _op_ident))
+# public numlit := ws >> num_text >> ws >> eof
 numlit = _SingleRule(lambda text: (_WS >> _numlit << _WS << eof).parse(text))
+# public strlit := ws >> (quoted_string | block_string) >> ws >> eof
 strlit = _SingleRule(
     lambda text: (_WS >> (_quoted_string | _block_string) << _WS << eof).parse(text)
 )
+# public lambda_lit := ws >> lambda >> ws >> eof
 lambda_lit = _SingleRule(lambda text: (_WS >> lambda_parser << _WS << eof).parse(text))
+# public expr := module_expr
 expr = _SingleRule(_parse_expr)

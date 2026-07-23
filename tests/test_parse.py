@@ -43,6 +43,13 @@ def test_expr_apply_and_table():
             Ast.Ident("y"),
         ],
     )
+    assert Rule.expr.parse("x === y") == Ast.chain_apply(
+        Ast.Ident("==="),
+        [
+            Ast.Ident("x"),
+            Ast.Ident("y"),
+        ],
+    )
     assert Rule.expr.parse("(+) x y") == Ast.chain_apply(
         Ast.Ident("+"),
         [

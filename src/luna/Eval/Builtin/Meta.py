@@ -1,5 +1,5 @@
-from luna.Eval.Val import Val, Tbl, CstStr, builtin
-from typing import List, Dict, cast
+from luna.Eval.Val import Val, Tbl, CstStr, CstNum, Clo, BltClo, BltCloCont, builtin
+from typing import List, Dict
 
 
 def eval(nil: Tbl):
@@ -22,15 +22,23 @@ def eval(nil: Tbl):
     return eval_impl
 
 
-def type_(typetable: Dict[str, Tbl]):
+@builtin(1)
+def decltype(vals: List[Val]):
     """
-    type: Val |-> Tbl
-
-    where `Tbl` being type of result is actually for tagging.
+    decltype: Val |-> String
     """
+    match vals[0]:
+        case CstNum():
+            return CstStr.from_strlit("Number")
+        case CstStr():
+            return CstStr.from_strlit("String")
+        case Tbl():
+            return CstStr.from_strlit("Table")
+        case Clo():
+            return CstStr.from_strlit("Closure")
+        case BltClo():
+            return CstStr.from_strlit("BuiltinClosure")
+        case BltCloCont():
+            return CstStr.from_strlit("BuiltinClosureContinuation")
 
-    @builtin(1)
-    def type_impl(vals: List[Val]):
-        return typetable[vals[0].__class__.__name__]
-
-    return type_impl
+    return decltype
